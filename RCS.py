@@ -21,7 +21,19 @@ material_db = {
     "Titan":       {"sigma": 2.4e6,  "eps_r": 1.0, "tan_delta": 0.0, "reflectivity": 0.95},
     "Kupfer":      {"sigma": 5.8e7,  "eps_r": 1.0, "tan_delta": 0.0, "reflectivity": 0.99},
     "Gold":        {"sigma": 4.1e7,  "eps_r": 1.0, "tan_delta": 0.0, "reflectivity": 0.995},
-    "Graphit":     {"sigma": 1e3,    "eps_r": 12.0, "tan_delta": 0.1, "reflectivity": 0.5}
+    "Graphit":     {"sigma": 1e3,    "eps_r": 12.0, "tan_delta": 0.1, "reflectivity": 0.5},
+"RAM – Iron Ball Paint":      {"sigma": 1e-4, "eps_r": 10.0, "tan_delta": 0.15, "reflectivity": 0.25},
+"RAM – Carbon Nanotube":      {"sigma": 1e2,  "eps_r": 12.0, "tan_delta": 0.1,  "reflectivity": 0.1},
+"RAM – Conductive Polymer":   {"sigma": 1e0,  "eps_r": 5.0,  "tan_delta": 0.3,  "reflectivity": 0.2},
+"RAM – Magnetic Ferrite":     {"sigma": 1e-2, "eps_r": 13.0, "tan_delta": 0.5,  "reflectivity": 0.15},
+"RAM – Foam Layer":           {"sigma": 1e-6, "eps_r": 1.5,  "tan_delta": 0.05, "reflectivity": 0.3},
+"RAM – Dallenbach Layer":     {"sigma": 1e-5, "eps_r": 7.0,  "tan_delta": 0.2,  "reflectivity": 0.05},
+"RAM – Jaumann Layer":        {"sigma": 1e-4, "eps_r": 9.0,  "tan_delta": 0.4,  "reflectivity": 0.05},
+ "MagRAM":                {"sigma": 1e-4, "eps_r": 15.0, "tan_delta": 0.25, "reflectivity": 0.05},
+    "Metamaterial RAM":      {"sigma": 1e-7, "eps_r": 25.0, "tan_delta": 0.4,  "reflectivity": 0.01},
+    "Carbon Nanotube Foam":  {"sigma": 1e1,  "eps_r": 7.5,  "tan_delta": 0.03, "reflectivity": 0.15},
+    "Spray-on Polymer RAM":  {"sigma": 5e-3, "eps_r": 9.0,  "tan_delta": 0.12, "reflectivity": 0.2}
+
 }
 
 # --- Radar Presets ---
@@ -35,7 +47,18 @@ radar_presets = {
     "F-16 AN/APG-68 (10.5 GHz)": 10500,
     "F-22 AN/APG-77 (12 GHz)": 12000,
     "Su-35 Irbis-E (10 GHz)": 10000,
-    "S-400 91N6E Big Bird (6 GHz)": 6000
+    "S-400 91N6E Big Bird (6 GHz)": 6000,
+"Su-35 Irbis-E (10 GHz)": 10000,
+    "Su-57 N036 Belka (9 GHz)": 9000,
+    "MiG-31 Zaslon (10.2 GHz)": 10200,
+    "S-300 Flap Lid (9.2 GHz)": 9200,
+    "S-400 Grave Stone (10 GHz)": 10000,
+    "S-400 Big Bird (6 GHz)": 6000,
+    "Konteyner OTH Radar (0.02 GHz)": 20,
+    "Nebo SV (0.15 GHz)": 150,
+    "Nebo-M Multiband (1.5 GHz)": 1500,
+    "96L6E Cheese Board (3 GHz)": 3000,
+    "Kasta 2E1 (1.2 GHz)": 1200
 }
 
 # --- Hilfsfunktionen ---
