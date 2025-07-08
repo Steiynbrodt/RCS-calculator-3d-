@@ -3,9 +3,8 @@
 import numpy as np
 import trimesh
 import tkinter as tk
-from tkinter import filedialog, ttk
+from tkinter import filedialog, ttk, messagebox
 import matplotlib.pyplot as plt
-from mpl_toolkits.mplot3d import Axes3D
 import os
 import csv
 import matplotlib.image as mpimg
@@ -48,7 +47,6 @@ radar_presets = {
     "F-22 AN/APG-77 (12 GHz)": 12000,
     "Su-35 Irbis-E (10 GHz)": 10000,
     "S-400 91N6E Big Bird (6 GHz)": 6000,
-"Su-35 Irbis-E (10 GHz)": 10000,
     "Su-57 N036 Belka (9 GHz)": 9000,
     "MiG-31 Zaslon (10.2 GHz)": 10200,
     "S-300 Flap Lid (9.2 GHz)": 9200,
@@ -79,11 +77,12 @@ def rotation_matrix(yaw, pitch, roll):
 def frequency_dependent_loss(freq_ghz):
     return max(0.8 - 0.02 * (freq_ghz - 1), 0.2)
 
-def realistic_rcs_with_noise(rcs_val):
-    return rcs_val + np.random.normal(0, 2)
+
+# No longer needed, noise is added vectorized in simulate_rcs
 
 # --- Raytracing ---
 def trace_ray(mesh, origin, direction, max_depth, reflectivity, freq_ghz):
+    # Use the fastest available ray intersector
     try:
         rays = trimesh.ray.ray_pyembree.RayMeshIntersector(mesh)
     except Exception:
@@ -92,13 +91,14 @@ def trace_ray(mesh, origin, direction, max_depth, reflectivity, freq_ghz):
     rcs = 0.0
     loss_per_reflection = frequency_dependent_loss(freq_ghz)
     for _ in range(max_depth):
-        locs, _, tri_idx = rays.intersects_location([origin], [direction], multiple_hits=False)
+        locs, _, tri_idx = rays.intersects_location(np.array([origin]), np.array([direction]), multiple_hits=False)
         if len(locs) == 0:
             break
         hit = locs[0]
         normal = mesh.face_normals[tri_idx[0]]
         reflect_dir = direction - 2 * np.dot(direction, normal) * normal
         reflect_dir /= np.linalg.norm(reflect_dir)
+        # Only add contribution if reflection is strong
         if np.dot(reflect_dir, -direction) > 0.95:
             contrib = energy * mesh.area_faces[tri_idx[0]] * (np.dot(normal, -direction))**2
             rcs += contrib
@@ -113,12 +113,25 @@ def simulate_rcs(mesh, material, max_reflections, freq_ghz, az_steps=360, el_ste
     el = np.linspace(-90, 90, el_steps)
     az_grid, el_grid = np.meshgrid(az, el)
     dirs = sph2cart(az_grid, el_grid)
-    rcs_db = np.zeros_like(az_grid)
-    for i in range(dirs.shape[0]):
-        for j in range(dirs.shape[1]):
-            origin = mesh.bounding_sphere.center + 100 * (-dirs[i, j])
-            rcs_lin = trace_ray(mesh, origin, dirs[i, j], max_reflections, material["reflectivity"], freq_ghz)
-            rcs_db[i, j] = realistic_rcs_with_noise(10 * np.log10(rcs_lin + 1e-6))
+    origins = mesh.bounding_sphere.center + 100 * (-dirs.reshape(-1, 3))
+    directions = dirs.reshape(-1, 3)
+    import concurrent.futures
+    reflectivity = material["reflectivity"]
+    def ray_func(args):
+        origin, direction = args
+        return trace_ray(mesh, origin, direction, max_reflections, reflectivity, freq_ghz)
+    # Use ProcessPoolExecutor for true parallelism if available
+    try:
+        with concurrent.futures.ProcessPoolExecutor() as executor:
+            rcs_lin = list(executor.map(ray_func, zip(origins, directions)))
+    except Exception:
+        # Fallback to threads if process pool fails (e.g. on Windows or with unpicklable objects)
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            rcs_lin = list(executor.map(ray_func, zip(origins, directions)))
+    rcs_lin = np.array(rcs_lin).reshape(dirs.shape[:2])
+    LOG_EPS = 1e-6  # for numerical stability
+    rcs_db = 10 * np.log10(rcs_lin + LOG_EPS)
+    rcs_db = rcs_db + np.random.normal(0, 2, rcs_db.shape)
     return az, el, rcs_db
 
 # --- GUI, Visualisierung & Export ---
@@ -127,65 +140,77 @@ class RadarGUI:
     def __init__(self, master):
         self.master = master
         master.title("Radar RCS Simulation")
+        master.geometry("800x600")
+        master.minsize(700, 500)
+        master.configure(bg="#222831")
 
-        # Datei & Materialwahl
-        tk.Label(master, text="3D-Modell (STL, OBJ, GLB):").grid(row=0, column=0)
-        self.file_label = tk.Label(master, text="Keine Datei")
-        self.file_label.grid(row=0, column=1)
-        tk.Button(master, text="Laden", command=self.load_file).grid(row=0, column=2)
+        style = ttk.Style()
+        style.theme_use('clam')
+        style.configure('TLabel', background="#222831", foreground="#eeeeee", font=("Segoe UI", 11))
+        style.configure('TButton', font=("Segoe UI", 11), padding=6)
+        style.configure('TCheckbutton', background="#222831", foreground="#eeeeee", font=("Segoe UI", 11))
+        style.configure('TMenubutton', font=("Segoe UI", 11))
 
-        tk.Label(master, text="Material:").grid(row=1, column=0)
+        main_frame = ttk.Frame(master, padding=20, style='TFrame')
+        main_frame.pack(fill=tk.BOTH, expand=True)
+        main_frame.columnconfigure(1, weight=1)
+        main_frame.rowconfigure(tuple(range(12)), weight=1)
+
+        ttk.Label(main_frame, text="3D-Modell (STL, OBJ, GLB):").grid(row=0, column=0, sticky="e", pady=4)
+        self.file_label = ttk.Label(main_frame, text="Keine Datei", style='TLabel')
+        self.file_label.grid(row=0, column=1, sticky="ew", pady=4)
+        ttk.Button(main_frame, text="Laden", command=self.load_file).grid(row=0, column=2, padx=5, pady=4)
+
+        ttk.Label(main_frame, text="Material:").grid(row=1, column=0, sticky="e", pady=4)
         self.material_var = tk.StringVar(master)
         self.material_var.set("Aluminium")
-        ttk.OptionMenu(master, self.material_var, "Aluminium", *material_db.keys()).grid(row=1, column=1)
+        material_menu = ttk.OptionMenu(main_frame, self.material_var, "Aluminium", *material_db.keys())
+        material_menu.grid(row=1, column=1, sticky="ew", pady=4)
 
-        tk.Label(master, text="Radarprofil:").grid(row=2, column=0)
+        ttk.Label(main_frame, text="Radarprofil:").grid(row=2, column=0, sticky="e", pady=4)
         self.preset_var = tk.StringVar(master)
         self.preset_var.set("NATO – X-Band (10 GHz)")
-        ttk.OptionMenu(master, self.preset_var, "NATO – X-Band (10 GHz)", *radar_presets.keys(), command=self.apply_preset).grid(row=2, column=1)
+        preset_menu = ttk.OptionMenu(main_frame, self.preset_var, "NATO – X-Band (10 GHz)", *radar_presets.keys(), command=self.apply_preset)
+        preset_menu.grid(row=2, column=1, sticky="ew", pady=4)
 
-        # Parameter
-        tk.Label(master, text="Frequenz (MHz):").grid(row=3, column=0)
-        self.freq_scale = tk.Scale(master, from_=100, to=20000, orient=tk.HORIZONTAL)
+        ttk.Label(main_frame, text="Frequenz (MHz):").grid(row=3, column=0, sticky="e", pady=4)
+        self.freq_scale = tk.Scale(main_frame, from_=100, to=20000, orient=tk.HORIZONTAL, bg="#393e46", fg="#eeeeee", highlightbackground="#222831")
         self.freq_scale.set(10000)
-        self.freq_scale.grid(row=3, column=1)
+        self.freq_scale.grid(row=3, column=1, sticky="ew", pady=4)
 
-        tk.Label(master, text="Max. Reflexionen:").grid(row=4, column=0)
-        self.refl_slider = tk.Scale(master, from_=1, to=10, orient=tk.HORIZONTAL)
+        ttk.Label(main_frame, text="Max. Reflexionen:").grid(row=4, column=0, sticky="e", pady=4)
+        self.refl_slider = tk.Scale(main_frame, from_=1, to=10, orient=tk.HORIZONTAL, bg="#393e46", fg="#eeeeee", highlightbackground="#222831")
         self.refl_slider.set(3)
-        self.refl_slider.grid(row=4, column=1)
+        self.refl_slider.grid(row=4, column=1, sticky="ew", pady=4)
 
-        tk.Label(master, text="Elevation-Schnitt (°):").grid(row=5, column=0)
-        self.el_slider = tk.Scale(master, from_=-90, to=90, orient=tk.HORIZONTAL)
+        ttk.Label(main_frame, text="Elevation-Schnitt (°):").grid(row=5, column=0, sticky="e", pady=4)
+        self.el_slider = tk.Scale(main_frame, from_=-90, to=90, orient=tk.HORIZONTAL, bg="#393e46", fg="#eeeeee", highlightbackground="#222831")
         self.el_slider.set(0)
-        self.el_slider.grid(row=5, column=1)
+        self.el_slider.grid(row=5, column=1, sticky="ew", pady=4)
 
-        # Rotation
-        tk.Label(master, text="Yaw (°):").grid(row=6, column=0)
-        self.yaw = tk.Scale(master, from_=-180, to=180, orient=tk.HORIZONTAL)
+        ttk.Label(main_frame, text="Yaw (°):").grid(row=6, column=0, sticky="e", pady=4)
+        self.yaw = tk.Scale(main_frame, from_=-180, to=180, orient=tk.HORIZONTAL, bg="#393e46", fg="#eeeeee", highlightbackground="#222831")
         self.yaw.set(0)
-        self.yaw.grid(row=6, column=1)
+        self.yaw.grid(row=6, column=1, sticky="ew", pady=4)
 
-        tk.Label(master, text="Pitch (°):").grid(row=7, column=0)
-        self.pitch = tk.Scale(master, from_=-90, to=90, orient=tk.HORIZONTAL)
+        ttk.Label(main_frame, text="Pitch (°):").grid(row=7, column=0, sticky="e", pady=4)
+        self.pitch = tk.Scale(main_frame, from_=-90, to=90, orient=tk.HORIZONTAL, bg="#393e46", fg="#eeeeee", highlightbackground="#222831")
         self.pitch.set(0)
-        self.pitch.grid(row=7, column=1)
+        self.pitch.grid(row=7, column=1, sticky="ew", pady=4)
 
-        tk.Label(master, text="Roll (°):").grid(row=8, column=0)
-        self.roll = tk.Scale(master, from_=-180, to=180, orient=tk.HORIZONTAL)
+        ttk.Label(main_frame, text="Roll (°):").grid(row=8, column=0, sticky="e", pady=4)
+        self.roll = tk.Scale(main_frame, from_=-180, to=180, orient=tk.HORIZONTAL, bg="#393e46", fg="#eeeeee", highlightbackground="#222831")
         self.roll.set(0)
-        self.roll.grid(row=8, column=1)
+        self.roll.grid(row=8, column=1, sticky="ew", pady=4)
 
-        # Optionen
         self.show_model = tk.BooleanVar(value=True)
         self.show_rays = tk.BooleanVar(value=False)
-        tk.Checkbutton(master, text="Modell anzeigen", variable=self.show_model).grid(row=9, column=0)
-        tk.Checkbutton(master, text="Rayvisualisierung", variable=self.show_rays).grid(row=9, column=1)
+        ttk.Checkbutton(main_frame, text="Modell anzeigen", variable=self.show_model, style='TCheckbutton').grid(row=9, column=0, sticky="w", pady=4)
+        ttk.Checkbutton(main_frame, text="Rayvisualisierung", variable=self.show_rays, style='TCheckbutton').grid(row=9, column=1, sticky="w", pady=4)
 
-        # Start + Export
-        tk.Button(master, text="Simulation starten", command=self.run_simulation).grid(row=10, column=0, columnspan=2)
-        tk.Button(master, text="Frequenz-Sweep", command=self.plot_freq_sweep).grid(row=11, column=0)
-        tk.Button(master, text="Heatmap exportieren", command=self.export_heatmap).grid(row=11, column=1)
+        ttk.Button(main_frame, text="Simulation starten", command=self.run_simulation).grid(row=10, column=0, columnspan=2, sticky="ew", pady=8)
+        ttk.Button(main_frame, text="Frequenz-Sweep", command=self.plot_freq_sweep).grid(row=11, column=0, sticky="ew", pady=4)
+        ttk.Button(main_frame, text="Heatmap exportieren", command=self.export_heatmap).grid(row=11, column=1, sticky="ew", pady=4)
 
         self.mesh = None
         self.last_rcs = None
@@ -199,26 +224,36 @@ class RadarGUI:
     def load_file(self):
         path = filedialog.askopenfilename(filetypes=[("3D-Dateien", "*.stl *.obj *.glb *.gltf")])
         if path:
-            self.mesh = trimesh.load_mesh(path, force='mesh')
-            self.file_label.config(text=os.path.basename(path))
+            try:
+                self.mesh = trimesh.load_mesh(path, force='mesh')
+                if self.mesh.is_empty:
+                    raise ValueError("Das geladene Modell ist leer oder ungültig.")
+                self.file_label.config(text=os.path.basename(path))
+            except Exception as e:
+                messagebox.showerror("Fehler beim Laden", f"Fehler beim Laden des Modells:\n{e}")
+                self.mesh = None
+                self.file_label.config(text="Keine Datei")
 
     def run_simulation(self):
         if self.mesh is None:
-            print("Kein Modell geladen")
+            messagebox.showwarning("Kein Modell", "Kein Modell geladen.")
             return
-        material = material_db[self.material_var.get()]
-        freq = self.freq_scale.get() / 1000
-        refl = self.refl_slider.get()
-        rot = rotation_matrix(self.yaw.get(), self.pitch.get(), self.roll.get())
-        rotated = self.mesh.copy()
-        rotated.apply_transform(np.vstack((np.hstack((rot, [[0], [0], [0]])), [0, 0, 0, 1])))
-        az, el, rcs = simulate_rcs(rotated, material, refl, freq)
-        self.last_rcs = rcs
-        self.last_az = az
-        self.last_el = el
-        self.plot_2d()
-        self.plot_3d(rotated)
-        self.export_csv()
+        try:
+            material = material_db[self.material_var.get()]
+            freq = self.freq_scale.get() / 1000
+            refl = self.refl_slider.get()
+            rot = rotation_matrix(self.yaw.get(), self.pitch.get(), self.roll.get())
+            rotated = self.mesh.copy()
+            rotated.apply_transform(np.vstack((np.hstack((rot, [[0], [0], [0]])), [0, 0, 0, 1])))
+            az, el, rcs = simulate_rcs(rotated, material, refl, freq)
+            self.last_rcs = rcs
+            self.last_az = az
+            self.last_el = el
+            self.plot_2d()
+            self.plot_3d(rotated)
+            self.export_csv()
+        except Exception as e:
+            messagebox.showerror("Fehler bei Simulation", f"Fehler während der Simulation:\n{e}")
 
     def plot_2d(self):
         if self.last_rcs is None:
@@ -246,13 +281,19 @@ class RadarGUI:
         az_rad = np.radians(self.last_az)
         el_rad = np.radians(self.last_el)
         az_grid, el_grid = np.meshgrid(az_rad, el_rad)
-        r = 10 ** (self.last_rcs / 10.0)
+        r_raw = 10 ** (self.last_rcs / 10.0)
+        # Scale RCS bubble to match model size
+        model_radius = np.linalg.norm(mesh.bounding_box.extents) / 2
+        r = r_raw / np.max(r_raw) * model_radius * 1.2  # 1.2 = extra margin
         x = r * np.cos(el_grid) * np.cos(az_grid)
         y = r * np.cos(el_grid) * np.sin(az_grid)
         z = r * np.sin(el_grid)
         fig = plt.figure()
         ax = fig.add_subplot(111, projection='3d')
-        ax.plot_surface(x, y, z, facecolors=plt.cm.viridis((r - r.min()) / (r.max() - r.min())), rstride=1, cstride=1, alpha=0.9)
+        surf = ax.plot_surface(x, y, z, facecolors=plt.cm.viridis((r_raw - r_raw.min()) / (r_raw.max() - r_raw.min())), rstride=1, cstride=1, alpha=0.5)
+        mappable = plt.cm.ScalarMappable(cmap=plt.cm.viridis)
+        mappable.set_array(r_raw)
+        fig.colorbar(mappable, ax=ax, shrink=0.5, aspect=10, label="RCS (linear)")
         if self.show_model.get():
             ax.add_collection3d(Poly3DCollection(mesh.vertices[mesh.faces], facecolor='gray', edgecolor='k', alpha=0.2))
         ax.set_box_aspect([1, 1, 1])
@@ -260,43 +301,62 @@ class RadarGUI:
         plt.show()
 
     def export_csv(self):
-        with open("rcs_export.csv", mode='w', newline='') as f:
-            writer = csv.writer(f)
-            writer.writerow(['Azimuth (°)', 'Elevation (°)', 'RCS (dBsm)'])
-            for i in range(len(self.last_el)):
-                for j in range(len(self.last_az)):
-                    writer.writerow([self.last_az[j], self.last_el[i], self.last_rcs[i, j]])
+        try:
+            with open("rcs_export.csv", mode='w', newline='') as f:
+                writer = csv.writer(f)
+                writer.writerow(['Azimuth (°)', 'Elevation (°)', 'RCS (dBsm)'])
+                for i in range(len(self.last_el)):
+                    for j in range(len(self.last_az)):
+                        writer.writerow([self.last_az[j], self.last_el[i], self.last_rcs[i, j]])
+            messagebox.showinfo("Export erfolgreich", "RCS-Daten wurden als rcs_export.csv gespeichert.")
+        except Exception as e:
+            messagebox.showerror("Fehler beim Export", f"Fehler beim Exportieren der CSV:\n{e}")
 
     def export_heatmap(self):
-        if self.last_rcs is None:
-            return
-        plt.imshow(self.last_rcs, extent=[0, 360, -90, 90], aspect='auto', cmap='hot', origin='lower')
-        plt.colorbar(label="RCS (dBsm)")
-        plt.title("RCS Heatmap")
-        plt.xlabel("Azimuth")
-        plt.ylabel("Elevation")
-        plt.savefig("rcs_heatmap.png")
-        plt.close()
-        print("Heatmap exportiert")
+        import threading
+        def worker():
+            if self.last_rcs is None:
+                return
+            try:
+                plt.imshow(self.last_rcs, extent=[0, 360, -90, 90], aspect='auto', cmap='hot', origin='lower')
+                plt.colorbar(label="RCS (dBsm)")
+                plt.title("RCS Heatmap")
+                plt.xlabel("Azimuth")
+                plt.ylabel("Elevation")
+                plt.savefig("rcs_heatmap.png")
+                plt.close()
+                self.master.after(0, lambda: messagebox.showinfo("Export erfolgreich", "Heatmap wurde als rcs_heatmap.png gespeichert."))
+            except Exception as e:
+                self.master.after(0, lambda e=e: messagebox.showerror("Fehler beim Export", f"Fehler beim Exportieren der Heatmap:\n{e}"))
+        threading.Thread(target=worker, daemon=True).start()
 
     def plot_freq_sweep(self):
-        if self.mesh is None:
-            return
-        material = material_db[self.material_var.get()]
-        refl = self.refl_slider.get()
-        freqs = np.linspace(1, 35, 30)
-        values = []
-        for f in freqs:
-            _, _, rcs = simulate_rcs(self.mesh, material, refl, f)
-            mid_el = rcs.shape[0] // 2
-            avg_rcs = np.mean(rcs[mid_el])
-            values.append(avg_rcs)
-        plt.plot(freqs, values)
-        plt.xlabel("Frequenz (GHz)")
-        plt.ylabel("RCS (dBsm)")
-        plt.title("Frequenz-Sweep")
-        plt.grid(True)
-        plt.show()
+        import threading
+        def worker():
+            if self.mesh is None:
+                self.master.after(0, lambda: messagebox.showwarning("Kein Modell", "Kein Modell geladen."))
+                return
+            try:
+                material = material_db[self.material_var.get()]
+                refl = self.refl_slider.get()
+                freqs = np.linspace(1, 35, 30)
+                values = []
+                for f in freqs:
+                    _, _, rcs = simulate_rcs(self.mesh, material, refl, f)
+                    mid_el = rcs.shape[0] // 2
+                    avg_rcs = np.mean(rcs[mid_el])
+                    values.append(avg_rcs)
+                def plot_result():
+                    plt.plot(freqs, values)
+                    plt.xlabel("Frequenz (GHz)")
+                    plt.ylabel("RCS (dBsm)")
+                    plt.title("Frequenz-Sweep")
+                    plt.grid(True)
+                    plt.show()
+                self.master.after(0, plot_result)
+            except Exception as e:
+                self.master.after(0, lambda e=e: messagebox.showerror("Fehler bei Sweep", f"Fehler beim Frequenz-Sweep:\n{e}"))
+        threading.Thread(target=worker, daemon=True).start()
 
 if __name__ == '__main__':
     root = tk.Tk()
