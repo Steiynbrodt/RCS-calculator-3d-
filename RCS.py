@@ -1,5 +1,11 @@
 # Radar RCS Simulator – Vollständiger Code (GUI + Visualisierung + Export)
 
+
+
+
+
+import concurrent.futures
+
 import numpy as np
 import trimesh
 import traceback
@@ -85,66 +91,50 @@ def frequency_dependent_loss(freq_ghz):
 
 # --- Raytracing ---
 def trace_ray(mesh, origin, direction, max_depth, reflectivity, freq_ghz):
-    """
-    Traces a single radar ray on the mesh with recursive reflections.
-    
-    Parameters:
-        mesh: trimesh.Trimesh – The mesh to trace on.
-        origin: np.ndarray – Starting point of the ray (3,).
-        direction: np.ndarray – Normalized direction of the ray (3,).
-        max_depth: int – Maximum number of reflections.
-        reflectivity: float – Material reflectivity coefficient.
-        freq_ghz: float – Frequency in GHz (affects energy loss).
-    
-    Returns:
-        rcs: float – Accumulated radar cross section contribution.
-    """
-    rays = mesh.ray  # Always use built-in intersector (safe)
+    rays = mesh.ray
     energy = 1.0
     rcs = 0.0
-    loss_per_reflection = frequency_dependent_loss(freq_ghz)
+    loss_per_reflection = max(0.8 - 0.02 * (freq_ghz - 1), 0.2)
 
     for _ in range(max_depth):
         try:
             locs, _, tri_idx = rays.intersects_location(
                 np.array([origin]), np.array([direction]), multiple_hits=False)
-        except Exception as e:
-            # Fall back silently if the intersector fails
-            print(f"[Warn] Raytracing error: {e}")
+        except Exception:
             break
 
         if len(locs) == 0:
-            break  # no hit
+            break
 
         hit = locs[0]
         normal = mesh.face_normals[tri_idx[0]]
-
-        # Calculate reflection
         reflect_dir = direction - 2 * np.dot(direction, normal) * normal
         reflect_dir /= np.linalg.norm(reflect_dir)
 
-        # Only add contribution if reflection is strong
         if np.dot(reflect_dir, -direction) > 0.95:
             contrib = energy * mesh.area_faces[tri_idx[0]] * (np.dot(normal, -direction))**2
             rcs += contrib
 
-        # Update for next bounce
         energy *= reflectivity * loss_per_reflection
-        origin = hit + 1e-4 * reflect_dir  # offset to avoid self-hit
+        origin = hit + 1e-4 * reflect_dir
         direction = reflect_dir
 
     return rcs
 
 # --- Simulation ---
 def simulate_rcs(mesh, material, max_reflections, freq_ghz, az_steps=360, el_steps=181):
-    import traceback
     if mesh is None or not hasattr(mesh, 'bounding_sphere'):
         raise ValueError("Kein gültiges 3D-Mesh geladen.")
-    
+
     az = np.linspace(0, 360, az_steps)
     el = np.linspace(-90, 90, el_steps)
     az_grid, el_grid = np.meshgrid(az, el)
-    dirs = sph2cart(az_grid, el_grid)
+    dirs = np.stack((
+        np.cos(np.radians(el_grid)) * np.cos(np.radians(az_grid)),
+        np.cos(np.radians(el_grid)) * np.sin(np.radians(az_grid)),
+        np.sin(np.radians(el_grid))
+    ), axis=-1)
+
     origins = mesh.bounding_sphere.center + 100 * (-dirs.reshape(-1, 3))
     directions = dirs.reshape(-1, 3)
     reflectivity = material["reflectivity"]
@@ -153,12 +143,9 @@ def simulate_rcs(mesh, material, max_reflections, freq_ghz, az_steps=360, el_ste
         origin, direction = args
         try:
             return trace_ray(mesh, origin, direction, max_reflections, reflectivity, freq_ghz)
-        except Exception as e:
-            print("[simulate_rcs] Fehler beim Raytrace:", e)
-            traceback.print_exc()
+        except:
             return 0.0
 
-    import concurrent.futures
     with concurrent.futures.ThreadPoolExecutor() as executor:
         rcs_lin = list(executor.map(ray_func, zip(origins, directions)))
 
@@ -287,10 +274,11 @@ class RadarGUI:
         self.show_rays = tk.BooleanVar(value=False)
         ttk.Checkbutton(self.main_frame, text="Modell anzeigen", variable=self.show_model, style='TCheckbutton').grid(row=9, column=0, sticky="w", pady=4)
         ttk.Checkbutton(self.main_frame, text="Rayvisualisierung", variable=self.show_rays, style='TCheckbutton').grid(row=9, column=1, sticky="w", pady=4)
+  
 
-        ttk.Button(self.main_frame, text="Simulation starten", command=self.run_simulation).grid(row=10, column=0, columnspan=2, sticky="ew", pady=8)
-        ttk.Button(self.main_frame, text="Frequenz-Sweep", command=lambda: robust_freq_sweep(self.mesh,material_db[self.material_var.get()],self.refl_slider.get(),lambda func: self.master.after(0, func))).grid(row=11, column=0, sticky="ew", pady=4)
-        ttk.Button(self.main_frame, text="Heatmap exportieren", command=self.export_heatmap).grid(row=11, column=1, sticky="ew", pady=4)
+        ttk.Button(self.main_frame, text="Simulation starten", command=self.run_simulation).grid(row=13, column=0, columnspan=2, sticky="ew", pady=8)
+        ttk.Button(self.main_frame, text="Frequenz-Sweep", command=lambda: robust_freq_sweep(self.mesh,material_db[self.material_var.get()],self.refl_slider.get(),lambda func: self.master.after(0, func))).grid(row=14, column=0, sticky="ew", pady=4)
+        ttk.Button(self.main_frame, text="Heatmap exportieren", command=self.export_heatmap).grid(row=14, column=1, sticky="ew", pady=4)
         
         self.mesh = None
         self.last_rcs = None
@@ -344,103 +332,43 @@ class RadarGUI:
                 pass
         threading.Thread(target=worker, daemon=True).start()
 
-        ttk.Label(self.main_frame, text="3D-Modell (STL, OBJ, GLB):").grid(row=0, column=0, sticky="e", pady=4)
-        self.file_label = ttk.Label(self.main_frame, text="Keine Datei", style='TLabel')
-        self.file_label.grid(row=0, column=1, sticky="ew", pady=4)
-        ttk.Button(self.main_frame, text="Laden", command=self.load_file).grid(row=0, column=2, padx=5, pady=4)
-
-        ttk.Label(self.main_frame, text="Material:").grid(row=1, column=0, sticky="e", pady=4)
-        self.material_var = tk.StringVar(self.master)
-        self.material_var.set("Aluminium")
-        material_menu = ttk.OptionMenu(self.main_frame, self.material_var, "Aluminium", *material_db.keys())
-        material_menu.grid(row=1, column=1, sticky="ew", pady=4)
-
-        ttk.Label(self.main_frame, text="Radarprofil:").grid(row=2, column=0, sticky="e", pady=4)
-        self.preset_var = tk.StringVar(self.master)
-        self.preset_var.set("NATO – X-Band (10 GHz)")
-        preset_menu = ttk.OptionMenu(self.main_frame, self.preset_var, "NATO – X-Band (10 GHz)", *radar_presets.keys(), command=self.apply_preset)
-        preset_menu.grid(row=2, column=1, sticky="ew", pady=4)
-
-        ttk.Label(self.main_frame, text="Frequenz (MHz):").grid(row=3, column=0, sticky="e", pady=4)
-        self.freq_scale = tk.Scale(self.main_frame, from_=100, to=20000, orient=tk.HORIZONTAL, bg="#393e46", fg="#eeeeee", highlightbackground="#222831")
-        self.freq_scale.set(10000)
-        self.freq_scale.grid(row=3, column=1, sticky="ew", pady=4)
-
-        ttk.Label(self.main_frame, text="Max. Reflexionen:").grid(row=4, column=0, sticky="e", pady=4)
-        self.refl_slider = tk.Scale(self.main_frame, from_=1, to=10, orient=tk.HORIZONTAL, bg="#393e46", fg="#eeeeee", highlightbackground="#222831")
-        self.refl_slider.set(3)
-        self.refl_slider.grid(row=4, column=1, sticky="ew", pady=4)
-
-        ttk.Label(self.main_frame, text="Elevation-Schnitt (°):").grid(row=5, column=0, sticky="e", pady=4)
-        self.el_slider = tk.Scale(self.main_frame, from_=-90, to=90, orient=tk.HORIZONTAL, bg="#393e46", fg="#eeeeee", highlightbackground="#222831")
-        self.el_slider.set(0)
-        self.el_slider.grid(row=5, column=1, sticky="ew", pady=4)
-
-        ttk.Label(self.main_frame, text="Yaw (°):").grid(row=6, column=0, sticky="e", pady=4)
-        self.yaw = tk.Scale(self.main_frame, from_=-180, to=180, orient=tk.HORIZONTAL, bg="#393e46", fg="#eeeeee", highlightbackground="#222831")
-        self.yaw.set(0)
-        self.yaw.grid(row=6, column=1, sticky="ew", pady=4)
-
-        ttk.Label(self.main_frame, text="Pitch (°):").grid(row=7, column=0, sticky="e", pady=4)
-        self.pitch = tk.Scale(self.main_frame, from_=-90, to=90, orient=tk.HORIZONTAL, bg="#393e46", fg="#eeeeee", highlightbackground="#222831")
-        self.pitch.set(0)
-        self.pitch.grid(row=7, column=1, sticky="ew", pady=4)
-
-        ttk.Label(self.main_frame, text="Roll (°):").grid(row=8, column=0, sticky="e", pady=4)
-        self.roll = tk.Scale(self.main_frame, from_=-180, to=180, orient=tk.HORIZONTAL, bg="#393e46", fg="#eeeeee", highlightbackground="#222831")
-        self.roll.set(0)
-        self.roll.grid(row=8, column=1, sticky="ew", pady=4)
-
-        self.show_model = tk.BooleanVar(value=True)
-        self.show_rays = tk.BooleanVar(value=False)
-        ttk.Checkbutton(self.main_frame, text="Modell anzeigen", variable=self.show_model, style='TCheckbutton').grid(row=9, column=0, sticky="w", pady=4)
-        ttk.Checkbutton(self.main_frame, text="Rayvisualisierung", variable=self.show_rays, style='TCheckbutton').grid(row=9, column=1, sticky="w", pady=4)
-
-        ttk.Button(self.main_frame, text="Simulation starten", command=self.run_simulation).grid(row=10, column=0, columnspan=2, sticky="ew", pady=8)
-        ttk.Button(self.main_frame, text="Frequenz-Sweep", command=self.plot_freq_sweep).grid(row=11, column=0, sticky="ew", pady=4)
-        ttk.Button(self.main_frame, text="Heatmap exportieren", command=self.export_heatmap).grid(row=11, column=1, sticky="ew", pady=4)
-
-        self.mesh = None
-        self.last_rcs = None
-        self.last_az = None
-        self.last_el = None
 
     def apply_preset(self, selection):
         if selection in radar_presets:
             self.freq_scale.set(radar_presets[selection])
+      
     def load_file(self):
-        path = filedialog.askopenfilename(filetypes=[("3D-Dateien", "*.stl *.obj *.glb *.gltf")])
-        if path:
-            try:
-                mesh = trimesh.load_mesh(path, force='mesh')
-
-                if not isinstance(mesh, trimesh.Trimesh):
-                    if isinstance(mesh, trimesh.Scene):
-                        mesh = trimesh.util.concatenate([g for g in mesh.geometry.values() if isinstance(g, trimesh.Trimesh)])
-                    else:
-                        raise ValueError("Unbekannter Mesh-Typ geladen.")
-
-                mesh.remove_unreferenced_vertices()
-                mesh.update_faces(mesh.nondegenerate_faces())  # Statt remove_degenerate_faces (veraltet)
-
-                from trimesh.ray.ray_triangle import RayMeshIntersector
+            path = filedialog.askopenfilename(filetypes=[("3D-Dateien", "*.stl *.obj *.glb *.gltf")])
+            if path:
                 try:
-                    mesh.ray = RayMeshIntersector(mesh)
+                    mesh = trimesh.load_mesh(path, force='mesh')
+
+                    if not isinstance(mesh, trimesh.Trimesh):
+                        if isinstance(mesh, trimesh.Scene):
+                            mesh = trimesh.util.concatenate([g for g in mesh.geometry.values() if isinstance(g, trimesh.Trimesh)])
+                        else:
+                            raise ValueError("Unbekannter Mesh-Typ geladen.")
+
+                    mesh.remove_unreferenced_vertices()
+                    mesh.update_faces(mesh.nondegenerate_faces())
+
+                    if len(mesh.faces) > 50000:
+                        mesh = mesh.simplify_quadratic_decimation(50000)
+
+                    try:
+                        from trimesh.ray.ray_pyembree import RayMeshIntersector
+                        mesh.ray = RayMeshIntersector(mesh)
+                    except:
+                        from trimesh.ray.ray_triangle import RayMeshIntersector
+                        mesh.ray = RayMeshIntersector(mesh)
+
+                    self.mesh = mesh
+                    self.file_label.config(text=os.path.basename(path))
+
                 except Exception as e:
-                    messagebox.showerror("Raytracer Fehler", f"Raytracer konnte nicht initialisiert werden:\n{e}")
+                    messagebox.showerror("Fehler beim Laden", f"Das Modell konnte nicht geladen werden:\n{e}")
                     self.mesh = None
-                    return
-
-                self.mesh = mesh
-                self.file_label.config(text=os.path.basename(path))
-
-            except Exception as e:
-                messagebox.showerror("Fehler beim Laden", f"Das Modell konnte nicht geladen werden:\n{e}")
-                self.mesh = None
-                self.file_label.config(text="Keine Datei")
-
-
-
+                    self.file_label.config(text="Keine Datei")
 
     def run_simulation(self):
         if self.mesh is None:
@@ -492,7 +420,7 @@ class RadarGUI:
         r_raw = 10 ** (self.last_rcs / 10.0)
         # Scale RCS bubble to match model size
         model_radius = np.linalg.norm(mesh.bounding_box.extents) / 2
-        r = r_raw / np.max(r_raw) * model_radius * 1.2  # 1.2 = extra margin
+        r = r_raw / np.max(r_raw) * model_radius * 4 # 1.2 = extra margin
         x = r * np.cos(el_grid) * np.cos(az_grid)
         y = r * np.cos(el_grid) * np.sin(az_grid)
         z = r * np.sin(el_grid)
