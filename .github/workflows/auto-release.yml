@@ -30,14 +30,14 @@ jobs:
           pip install pyinstaller
 
       - name: Build EXE with PyInstaller
-        run: >-
-          pyinstaller RCS.py
-          --onefile
-          --noconsole
-          --name RCS-Calculator-3D
-          --collect-all pyvista
-          --collect-all trimesh
-          --collect-all matplotlib
+        run: |
+          pyinstaller RCS.py ^
+            --onefile ^
+            --noconsole ^
+            --name RCS-Calculator-3D ^
+            --collect-all pyvista ^
+            --collect-all trimesh ^
+            --collect-all matplotlib
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
