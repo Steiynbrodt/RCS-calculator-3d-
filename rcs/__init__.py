@@ -5,5 +5,8 @@ __all__ = [
     "presets",
     "math_utils",
     "physics",
+    "rcs_engine",
+    "templates",
+    "project_io",
     "gui",
 ]

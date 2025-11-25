@@ -1,16 +1,12 @@
-"""Entry point for launching the Radar RCS GUI."""
+"""Entry point for launching the PyQt RCS GUI."""
 
 from __future__ import annotations
 
-import tkinter as tk
-
-from .gui import RadarGUI
+from .gui import run_app
 
 
 def main() -> None:
-    root = tk.Tk()
-    RadarGUI(root)
-    root.mainloop()
+    run_app()
 
 
 if __name__ == "__main__":
