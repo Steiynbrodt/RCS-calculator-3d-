@@ -30,26 +30,20 @@ jobs:
           pip install pyinstaller
 
       - name: Build EXE with PyInstaller
-        shell: pwsh
-        run: >-
-          pyinstaller RCS.py `
-            --onedir `
-            --noconsole `
-            --name RCS-Calculator-3D `
-            --collect-all pyvista `
-            --collect-all trimesh `
+        run: |
+          pyinstaller RCS.py ^
+            --onefile ^
+            --noconsole ^
+            --name RCS-Calculator-3D ^
+            --collect-all pyvista ^
+            --collect-all trimesh ^
             --collect-all matplotlib
-
-      - name: Zip bundle for release
-        shell: pwsh
-        run: >-
-          Compress-Archive -Path "dist/RCS-Calculator-3D/*" -DestinationPath "dist/RCS-Calculator-3D.zip"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: RCS-Calculator-3D-zip
-          path: dist/RCS-Calculator-3D.zip
+          name: RCS-Calculator-3D-exe
+          path: dist/RCS-Calculator-3D.exe
 
   create-release:
     needs: build-windows
@@ -58,7 +52,7 @@ jobs:
       - name: Download artifact
         uses: actions/download-artifact@v4
         with:
-          name: RCS-Calculator-3D-zip
+          name: RCS-Calculator-3D-exe
           path: ./dist
 
       - name: Generate release tag
@@ -75,6 +69,6 @@ jobs:
           body: |
             Automated Windows executable build for commit ${{ github.sha }}.
             Triggered automatically from push to ${{ github.ref }}.
-          files: ./dist/RCS-Calculator-3D.zip
+          files: ./dist/RCS-Calculator-3D.exe
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

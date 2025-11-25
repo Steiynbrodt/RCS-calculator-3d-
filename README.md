@@ -18,4 +18,4 @@ python RCS.py
 Load an STL/OBJ/GLB/GLTF model, select a material and radar preset, then start the simulation. You can also perform a frequency sweep and export results for further analysis.
 
 ## Automated releases
-Each push to the `main` branch triggers a GitHub Actions workflow that builds a Windows PyInstaller one-directory bundle and publishes the zipped folder as a release artifact.
+Each push to the `main` branch triggers a GitHub Actions workflow that builds a Windows `.exe` with PyInstaller and publishes it as a new release artifact.
