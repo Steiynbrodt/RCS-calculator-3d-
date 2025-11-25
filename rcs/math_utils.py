@@ -23,6 +23,34 @@ def rotation_matrix(yaw: float, pitch: float, roll: float) -> np.ndarray:
     return r_yaw @ r_pitch @ r_roll
 
 
+def direction_grid(azimuth_deg: np.ndarray, elevation_deg: np.ndarray) -> np.ndarray:
+    """Compute Cartesian direction vectors for azimuth/elevation grids.
+
+    Parameters
+    ----------
+    azimuth_deg:
+        1D array of azimuth angles in degrees.
+    elevation_deg:
+        1D array of elevation angles in degrees.
+
+    Returns
+    -------
+    np.ndarray
+        Array of shape (len(elevation_deg), len(azimuth_deg), 3) with unit
+        vectors pointing toward each azimuth/elevation direction.
+    """
+    az_grid, el_grid = np.meshgrid(np.radians(azimuth_deg), np.radians(elevation_deg))
+    dirs = np.stack(
+        (
+            np.cos(el_grid) * np.cos(az_grid),
+            np.cos(el_grid) * np.sin(az_grid),
+            np.sin(el_grid),
+        ),
+        axis=-1,
+    )
+    return dirs
+
+
 def spherical_directions(
     az_steps: int,
     el_steps: int,
@@ -73,4 +101,4 @@ def frequency_loss(freq_ghz: float, min_loss: float = 0.2) -> float:
     return max(0.8 - 0.02 * (freq_ghz - 1), min_loss)
 
 
-__all__ = ["rotation_matrix", "spherical_directions", "frequency_loss"]
+__all__ = ["rotation_matrix", "spherical_directions", "frequency_loss", "direction_grid"]
