@@ -19,9 +19,6 @@ project files, or captured as NCTR-style signature templates for later matching.
 pip install -r requirements.txt
 ```
 
-If you encounter an error about a missing `libGL.so.1` while launching the GUI,
-install a system OpenGL runtime (e.g., on Debian/Ubuntu: `apt-get install -y libgl1`).
-
 ## Running the GUI
 ```bash
 python -m rcs.main
