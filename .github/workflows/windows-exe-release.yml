@@ -25,20 +25,25 @@ jobs:
           pip install pyinstaller
 
       - name: Build EXE with PyInstaller
-        run: |
-          pyinstaller RCS.py ^
-            --onefile ^
-            --noconsole ^
-            --name RCS-Calculator-3D ^
-            --collect-all pyvista ^
-            --collect-all trimesh ^
-            --collect-all matplotlib
+        run: >-
+          pyinstaller RCS.py
+          --onedir
+          --noconsole
+          --name RCS-Calculator-3D
+          --collect-all pyvista
+          --collect-all trimesh
+          --collect-all matplotlib
+
+      - name: Zip bundle for release
+        shell: pwsh
+        run: >-
+          Compress-Archive -Path "dist/RCS-Calculator-3D/*" -DestinationPath "dist/RCS-Calculator-3D.zip"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: RCS-Calculator-3D-exe
-          path: dist/RCS-Calculator-3D.exe
+          name: RCS-Calculator-3D-zip
+          path: dist/RCS-Calculator-3D.zip
 
   create-release:
     needs: build-windows
@@ -48,12 +53,12 @@ jobs:
       - name: Download artifact
         uses: actions/download-artifact@v4
         with:
-          name: RCS-Calculator-3D-exe
+          name: RCS-Calculator-3D-zip
           path: ./dist
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: ./dist/RCS-Calculator-3D.exe
+          files: ./dist/RCS-Calculator-3D.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
