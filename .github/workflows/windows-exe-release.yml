@@ -39,6 +39,11 @@ jobs:
         run: >-
           Compress-Archive -Path "dist/RCS-Calculator-3D/*" -DestinationPath "dist/RCS-Calculator-3D.zip"
 
+      - name: Zip bundle for release
+        shell: pwsh
+        run: >-
+          Compress-Archive -Path "dist/RCS-Calculator-3D/*" -DestinationPath "dist/RCS-Calculator-3D.zip"
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
