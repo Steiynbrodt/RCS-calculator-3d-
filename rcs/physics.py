@@ -70,16 +70,41 @@ def _simulate_chunk(mesh: trimesh.Trimesh, reflectivity: float, freq_ghz: float,
     return np.fromiter((trace(origin=orig, direction=dir_vec) for orig, dir_vec in zip(origins, directions)), dtype=float)
 
 
-def simulate_rcs(mesh: trimesh.Trimesh, material: dict, max_reflections: int, freq_ghz: float, az_steps: int = 360, el_steps: int = 181, max_workers: int | None = None) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Simulate RCS for a mesh using a grid of incoming directions."""
+def simulate_rcs(
+    mesh: trimesh.Trimesh,
+    material: dict,
+    max_reflections: int,
+    freq_ghz: float,
+    az_steps: int = 360,
+    el_steps: int = 181,
+    *,
+    max_workers: int | None = None,
+    beam_width: float | None = None,
+    look_az: float = 0.0,
+    look_el: float = 0.0,
+    range_factor: float = 5.0,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Simulate RCS for a mesh using a grid of incoming directions.
+
+    ``beam_width`` constrains the simulated field of view around the provided
+    ``look_az``/``look_el`` angles. ``range_factor`` scales how far away the
+    radar sits relative to the object's bounding sphere radius.
+    """
     if mesh is None or not hasattr(mesh, "bounding_sphere"):
         raise ValueError("Kein gültiges 3D-Mesh geladen.")
 
     if not hasattr(mesh, "ray"):
         mesh.ray = build_ray_intersector(mesh)
 
-    az, el, dirs = spherical_directions(az_steps, el_steps)
-    origins = mesh.bounding_sphere.center + 100 * (-dirs.reshape(-1, 3))
+    az, el, dirs = spherical_directions(
+        az_steps,
+        el_steps,
+        center_az=look_az,
+        center_el=look_el,
+        beam_width=beam_width,
+    )
+    distance = mesh.bounding_sphere.primitive.radius * range_factor + 1.0
+    origins = mesh.bounding_sphere.center + distance * (-dirs.reshape(-1, 3))
     directions = dirs.reshape(-1, 3)
     reflectivity = material["reflectivity"]
 
