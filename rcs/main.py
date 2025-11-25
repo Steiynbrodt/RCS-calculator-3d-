@@ -6,12 +6,7 @@ from .gui import run_app
 
 
 def main() -> None:
-    try:
-        run_app()
-    except ImportError as exc:  # pragma: no cover - environment dependent
-        print(exc)
-        print("Install required packages with 'pip install -r requirements.txt'.")
-        return
+    run_app()
 
 
 if __name__ == "__main__":
