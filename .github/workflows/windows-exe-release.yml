@@ -25,15 +25,24 @@ jobs:
           pip install pyinstaller
 
       - name: Build EXE with PyInstaller
+        run: >-
+          pyinstaller RCS.py
+          --onedir
+          --noconsole
+          --name RCS-Calculator-3D
+          --collect-all pyvista
+          --collect-all trimesh
+          --collect-all matplotlib
+
+      - name: Zip bundle for release
         shell: pwsh
-        run: |
-          pyinstaller RCS.py `
-            --onedir `
-            --noconsole `
-            --name RCS-Calculator-3D `
-            --collect-all pyvista `
-            --collect-all trimesh `
-            --collect-all matplotlib
+        run: >-
+          Compress-Archive -Path "dist/RCS-Calculator-3D/*" -DestinationPath "dist/RCS-Calculator-3D.zip"
+
+      - name: Zip bundle for release
+        shell: pwsh
+        run: >-
+          Compress-Archive -Path "dist/RCS-Calculator-3D/*" -DestinationPath "dist/RCS-Calculator-3D.zip"
 
       - name: Zip bundle for release
         shell: pwsh
