@@ -49,7 +49,7 @@ class RadarGUI:
         self.main_frame = ttk.Frame(master, padding=20, style="TFrame")
         self.main_frame.pack(fill=tk.BOTH, expand=True)
         self.main_frame.columnconfigure(1, weight=1)
-        self.main_frame.rowconfigure(tuple(range(13)), weight=1)
+        self.main_frame.rowconfigure(tuple(range(20)), weight=1)
 
         self._build_controls()
 
@@ -112,12 +112,57 @@ class RadarGUI:
         self.roll.set(0)
         self.roll.grid(row=8, column=1, sticky="ew", pady=4)
 
+        ttk.Label(self.main_frame, text="Radar-Azimuth (°):").grid(row=9, column=0, sticky="e", pady=4)
+        self.radar_az = tk.Scale(self.main_frame, from_=0, to=360, orient=tk.HORIZONTAL, bg="#393e46", fg="#eeeeee", highlightbackground="#222831")
+        self.radar_az.set(0)
+        self.radar_az.grid(row=9, column=1, sticky="ew", pady=4)
+
+        ttk.Label(self.main_frame, text="Radar-Elevation (°):").grid(row=10, column=0, sticky="e", pady=4)
+        self.radar_el = tk.Scale(self.main_frame, from_=-90, to=90, orient=tk.HORIZONTAL, bg="#393e46", fg="#eeeeee", highlightbackground="#222831")
+        self.radar_el.set(0)
+        self.radar_el.grid(row=10, column=1, sticky="ew", pady=4)
+
+        ttk.Label(self.main_frame, text="Radar-Sichtfeld (°):").grid(row=11, column=0, sticky="e", pady=4)
+        self.beamwidth_var = tk.DoubleVar(self.master, value=360.0)
+        self.beamwidth = tk.Scale(
+            self.main_frame,
+            from_=20,
+            to=360,
+            orient=tk.HORIZONTAL,
+            resolution=5,
+            variable=self.beamwidth_var,
+            bg="#393e46",
+            fg="#eeeeee",
+            highlightbackground="#222831",
+        )
+        self.beamwidth.grid(row=11, column=1, sticky="ew", pady=4)
+
+        ttk.Label(self.main_frame, text="Azimut-Auflösung:").grid(row=12, column=0, sticky="e", pady=4)
+        self.az_res_var = tk.IntVar(self.master, value=360)
+        ttk.Spinbox(self.main_frame, from_=30, to=720, increment=30, textvariable=self.az_res_var, width=8).grid(row=12, column=1, sticky="w", pady=4)
+
+        ttk.Label(self.main_frame, text="Elevations-Auflösung:").grid(row=13, column=0, sticky="e", pady=4)
+        self.el_res_var = tk.IntVar(self.master, value=181)
+        ttk.Spinbox(self.main_frame, from_=45, to=181, increment=9, textvariable=self.el_res_var, width=8).grid(row=13, column=1, sticky="w", pady=4)
+
+        ttk.Label(self.main_frame, text="Radar-Entfernung (x Radius):").grid(row=14, column=0, sticky="e", pady=4)
+        self.range_var = tk.DoubleVar(self.master, value=6.0)
+        self.range_scale = ttk.Scale(
+            self.main_frame,
+            from_=2.0,
+            to=20.0,
+            orient=tk.HORIZONTAL,
+            variable=self.range_var,
+            style="TScale",
+        )
+        self.range_scale.grid(row=14, column=1, sticky="ew", pady=4)
+
         self.show_model = tk.BooleanVar(value=True)
         ttk.Checkbutton(
             self.main_frame, text="Modell anzeigen", variable=self.show_model, style="TCheckbutton"
-        ).grid(row=9, column=0, sticky="w", pady=4)
+        ).grid(row=15, column=0, sticky="w", pady=4)
 
-        ttk.Button(self.main_frame, text="Simulation starten", command=self.run_simulation).grid(row=13, column=0, columnspan=2, sticky="ew", pady=8)
+        ttk.Button(self.main_frame, text="Simulation starten", command=self.run_simulation).grid(row=16, column=0, columnspan=2, sticky="ew", pady=8)
         ttk.Button(
             self.main_frame,
             text="Frequenz-Sweep",
@@ -127,8 +172,8 @@ class RadarGUI:
                 self.refl_slider.get(),
                 lambda func: self.master.after(0, func),
             ),
-        ).grid(row=14, column=0, sticky="ew", pady=4)
-        ttk.Button(self.main_frame, text="Heatmap exportieren", command=self.export_heatmap).grid(row=14, column=1, sticky="ew", pady=4)
+        ).grid(row=18, column=0, sticky="ew", pady=4)
+        ttk.Button(self.main_frame, text="Heatmap exportieren", command=self.export_heatmap).grid(row=18, column=1, sticky="ew", pady=4)
 
         self.live_mode = tk.BooleanVar(value=False)
         ttk.Checkbutton(
@@ -137,7 +182,7 @@ class RadarGUI:
             variable=self.live_mode,
             style="TCheckbutton",
             command=self.toggle_live_mode,
-        ).grid(row=12, column=0, columnspan=2, sticky="w", pady=4)
+        ).grid(row=17, column=0, columnspan=2, sticky="w", pady=4)
 
     # ------------------------------------------------------------------
     # Event handlers
@@ -181,12 +226,18 @@ class RadarGUI:
             (self.yaw, "<ButtonRelease-1>"),
             (self.pitch, "<ButtonRelease-1>"),
             (self.roll, "<ButtonRelease-1>"),
+            (self.radar_az, "<ButtonRelease-1>"),
+            (self.radar_el, "<ButtonRelease-1>"),
+            (self.beamwidth, "<ButtonRelease-1>"),
         ]
         if self.live_mode.get():
             for widget, event in callbacks:
                 widget.bind(event, self.live_update)
             self.material_var.trace_add("write", lambda *_: self.live_update())
             self.preset_var.trace_add("write", lambda *_: self.live_update())
+            self.az_res_var.trace_add("write", lambda *_: self.live_update())
+            self.el_res_var.trace_add("write", lambda *_: self.live_update())
+            self.range_var.trace_add("write", lambda *_: self.live_update())
         else:
             for widget, event in callbacks:
                 widget.unbind(event)
@@ -201,7 +252,19 @@ class RadarGUI:
                 freq = self.freq_scale.get() / 1000
                 refl = self.refl_slider.get()
                 rotated = self._rotated_mesh()
-                az, el, rcs = simulate_rcs(rotated, material, refl, freq, max_workers=os.cpu_count())
+                az, el, rcs = simulate_rcs(
+                    rotated,
+                    material,
+                    refl,
+                    freq,
+                    az_steps=self.az_res_var.get(),
+                    el_steps=self.el_res_var.get(),
+                    look_az=self.radar_az.get(),
+                    look_el=self.radar_el.get(),
+                    beam_width=self.beamwidth_var.get(),
+                    range_factor=self.range_var.get(),
+                    max_workers=os.cpu_count(),
+                )
                 self.last_rcs = rcs
                 self.last_az = az
                 self.last_el = el
@@ -225,7 +288,19 @@ class RadarGUI:
             freq = self.freq_scale.get() / 1000
             refl = self.refl_slider.get()
             rotated = self._rotated_mesh()
-            az, el, rcs = simulate_rcs(rotated, material, refl, freq, max_workers=os.cpu_count())
+            az, el, rcs = simulate_rcs(
+                rotated,
+                material,
+                refl,
+                freq,
+                az_steps=self.az_res_var.get(),
+                el_steps=self.el_res_var.get(),
+                look_az=self.radar_az.get(),
+                look_el=self.radar_el.get(),
+                beam_width=self.beamwidth_var.get(),
+                range_factor=self.range_var.get(),
+                max_workers=os.cpu_count(),
+            )
             self.last_rcs = rcs
             self.last_az = az
             self.last_el = el
