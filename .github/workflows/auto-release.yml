@@ -1,14 +1,19 @@
-name: Build Windows EXE and GitHub Release
+name: Auto-build Windows EXE and Release
 
 on:
   push:
-    tags:
-      - "v*"
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+env:
+  PYTHON_VERSION: "3.11"
 
 jobs:
   build-windows:
     runs-on: windows-latest
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -16,7 +21,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: ${{ env.PYTHON_VERSION }}
 
       - name: Install dependencies
         run: |
@@ -48,7 +53,6 @@ jobs:
   create-release:
     needs: build-windows
     runs-on: ubuntu-latest
-
     steps:
       - name: Download artifact
         uses: actions/download-artifact@v4
@@ -56,9 +60,20 @@ jobs:
           name: RCS-Calculator-3D-zip
           path: ./dist
 
+      - name: Generate release tag
+        id: release_tag
+        run: |
+          timestamp="$(date -u +"%Y%m%dT%H%M%SZ")"
+          echo "tag=auto-${timestamp}-${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ steps.release_tag.outputs.tag }}
+          name: "Automated EXE ${{ steps.release_tag.outputs.tag }}"
+          body: |
+            Automated Windows executable build for commit ${{ github.sha }}.
+            Triggered automatically from push to ${{ github.ref }}.
           files: ./dist/RCS-Calculator-3D.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
