@@ -35,6 +35,10 @@ def load_project(path: str | Path) -> ProjectState:
     sweep_obj = None
     if sweep_data:
         sweep_obj = FrequencySweep(sweep_data["start_hz"], sweep_data["stop_hz"], sweep_data["steps"])
+    settings_data.setdefault("surface_roughness_db", 0.0)
+    settings_data.setdefault("random_seed", None)
+    settings_data.setdefault("blade_count", 0)
+    settings_data.setdefault("blade_rpm", 0.0)
     settings = SimulationSettings(**settings_data)
     settings.sweep = sweep_obj
     return ProjectState(mesh_path=data.get("mesh_path"), settings=settings, material_name=data.get("material_name", ""))

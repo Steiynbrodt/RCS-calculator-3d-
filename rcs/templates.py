@@ -44,11 +44,28 @@ class SignatureTemplate:
 
 
 class TemplateLibrary:
-    """Manage a directory of signature templates."""
+    """Manage a directory of signature templates.
 
-    def __init__(self, directory: str | Path = "templates") -> None:
-        self.directory = Path(directory)
-        self.directory.mkdir(parents=True, exist_ok=True)
+    By default templates are stored in a user-writable directory under the
+    current user's home folder to avoid permission errors when the working
+    directory is read-only.
+    """
+
+    def __init__(self, directory: str | Path | None = None) -> None:
+        preferred = Path(directory) if directory else Path.home() / ".rcs" / "templates"
+        self.directory = self._ensure_directory(preferred, directory_provided=directory is not None)
+
+    def _ensure_directory(self, path: Path, *, directory_provided: bool) -> Path:
+        try:
+            path.mkdir(parents=True, exist_ok=True)
+            return path
+        except PermissionError:
+            if directory_provided:
+                # Caller explicitly requested this directory; propagate the error.
+                raise
+            fallback = Path.home() / ".rcs" / "templates"
+            fallback.mkdir(parents=True, exist_ok=True)
+            return fallback
 
     def list_templates(self) -> list[Path]:
         return sorted(self.directory.glob("*.json"))
@@ -69,6 +86,14 @@ class TemplateLibrary:
         target_class: str,
         meta: dict | None = None,
     ) -> SignatureTemplate:
+        meta = meta or {}
+        meta.setdefault("radar_profile", result.radar_profile)
+        meta.setdefault("target_speed_mps", result.target_speed_mps)
+        meta.setdefault("surface_roughness_db", result.surface_roughness_db)
+        meta.setdefault("blade_count", result.blade_count)
+        meta.setdefault("blade_rpm", result.blade_rpm)
+        if result.micro_doppler_hz is not None:
+            meta.setdefault("micro_doppler_hz", result.micro_doppler_hz.tolist())
         return SignatureTemplate(
             name=name,
             target_class=target_class,
@@ -78,7 +103,7 @@ class TemplateLibrary:
             elevation_deg=result.elevation_deg.tolist(),
             polarization=result.polarization,
             rcs_dbsm=result.rcs_dbsm.tolist(),
-            meta=meta or {},
+            meta=meta,
         )
 
     def match(self, result: SimulationResult) -> list[tuple[SignatureTemplate, float]]:

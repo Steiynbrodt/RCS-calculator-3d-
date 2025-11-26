@@ -15,6 +15,7 @@ from .physics import MIN_ENERGY, build_ray_intersector
 BAND_DEFAULTS = {
     "L": (1.0e9, 2.0e9),
     "S": (2.0e9, 4.0e9),
+    "C": (4.0e9, 8.0e9),
     "X": (8.0e9, 12.0e9),
 }
 
@@ -48,6 +49,12 @@ class SimulationSettings:
     elevation_step: float = 5.0
     elevation_slice_deg: float | None = None
     azimuth_slice_deg: float | None = None
+    target_speed_mps: float = 0.0
+    radar_profile: str | None = None
+    surface_roughness_db: float = 0.0
+    random_seed: int | None = None
+    blade_count: int = 0
+    blade_rpm: float = 0.0
 
     def frequencies(self) -> np.ndarray:
         if self.frequency_hz is not None:
@@ -88,6 +95,13 @@ class SimulationResult:
     azimuth_deg: np.ndarray
     elevation_deg: np.ndarray
     rcs_dbsm: np.ndarray  # shape (f, el, az)
+    target_speed_mps: float
+    radar_profile: str | None = None
+    doppler_hz: np.ndarray | None = None
+    surface_roughness_db: float = 0.0
+    blade_count: int = 0
+    blade_rpm: float = 0.0
+    micro_doppler_hz: np.ndarray | None = None
 
     def slice_for_elevation(self, elevation: float) -> tuple[np.ndarray, np.ndarray]:
         idx = int(np.argmin(np.abs(self.elevation_deg - elevation)))
@@ -119,6 +133,8 @@ class RCSEngine:
         if not hasattr(mesh, "ray"):
             mesh.ray = build_ray_intersector(mesh)
 
+        rng = np.random.default_rng(settings.random_seed)
+
         freqs = settings.frequencies()
         az = settings.azimuths()
         el = settings.elevations()
@@ -129,11 +145,14 @@ class RCSEngine:
         directions = dirs.reshape(-1, 3)
 
         rcs_all = np.zeros((len(freqs), len(el), len(az)), dtype=float)
+        doppler_all = np.zeros(len(freqs), dtype=float) if settings.target_speed_mps else None
 
         for fi, freq_hz in enumerate(freqs):
             if self._stop_requested:
                 break
             freq_ghz = freq_hz / 1e9
+            if doppler_all is not None:
+                doppler_all[fi] = 2 * settings.target_speed_mps * freq_hz / 3e8
             loss_per_reflection = frequency_loss(freq_ghz)
             rcs_lin = np.zeros(len(directions), dtype=float)
 
@@ -169,11 +188,20 @@ class RCSEngine:
                 rcs_lin[idx] = max(contribution, 1e-10)
 
             rcs_db = 10 * np.log10(rcs_lin.reshape(len(el), len(az)))
+            if settings.surface_roughness_db > 0:
+                rcs_db = rcs_db + rng.normal(
+                    0.0, settings.surface_roughness_db, size=rcs_db.shape
+                )
             rcs_all[fi] = rcs_db
             if progress:
                 progress(int((fi + 1) / len(freqs) * 100))
 
         self._stop_requested = False
+        micro_doppler = None
+        if settings.blade_count > 0 and settings.blade_rpm > 0:
+            fundamental = settings.blade_count * settings.blade_rpm / 60.0
+            harmonics = min(settings.blade_count + 2, 8)
+            micro_doppler = fundamental * np.arange(1, harmonics)
         return SimulationResult(
             band=settings.band,
             polarization=settings.polarization,
@@ -181,6 +209,13 @@ class RCSEngine:
             azimuth_deg=az,
             elevation_deg=el,
             rcs_dbsm=rcs_all,
+            target_speed_mps=settings.target_speed_mps,
+            radar_profile=settings.radar_profile,
+            doppler_hz=doppler_all,
+            surface_roughness_db=settings.surface_roughness_db,
+            blade_count=settings.blade_count,
+            blade_rpm=settings.blade_rpm,
+            micro_doppler_hz=micro_doppler,
         )
 
 
