@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, asdict
+from dataclasses import asdict, dataclass
 from typing import Iterable, Sequence
 
 import numpy as np
 import trimesh
 
-from .math_utils import direction_grid
-from .physics import MIN_ENERGY, build_ray_intersector, frequency_loss
+from .math_utils import direction_grid, frequency_loss
+from .physics import MIN_ENERGY, build_ray_intersector
 
 
 BAND_DEFAULTS = {
