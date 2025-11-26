@@ -18,6 +18,7 @@ from tkinter import filedialog, messagebox, ttk
 
 from .materials import MATERIAL_DB
 from .math_utils import rotation_matrix
+from .nctr import simulate_nctr_signature
 from .physics import build_ray_intersector, robust_freq_sweep, simulate_rcs
 from .presets import RADAR_PRESETS
 
@@ -57,6 +58,7 @@ class RadarGUI:
         self.last_rcs: np.ndarray | None = None
         self.last_az: np.ndarray | None = None
         self.last_el: np.ndarray | None = None
+        self.last_nctr: tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray] | None = None
 
     # ------------------------------------------------------------------
     # UI construction
@@ -117,6 +119,22 @@ class RadarGUI:
             self.main_frame, text="Modell anzeigen", variable=self.show_model, style="TCheckbutton"
         ).grid(row=9, column=0, sticky="w", pady=4)
 
+        ttk.Button(self.main_frame, text="NCTR-Vorschau", command=self.preview_nctr).grid(
+            row=10, column=0, sticky="ew", pady=4
+        )
+        ttk.Button(self.main_frame, text="NCTR Export", command=self.export_nctr_signature).grid(
+            row=10, column=1, sticky="ew", pady=4
+        )
+
+        self.live_mode = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            self.main_frame,
+            text="Live Simulation (experimentell)",
+            variable=self.live_mode,
+            style="TCheckbutton",
+            command=self.toggle_live_mode,
+        ).grid(row=12, column=0, columnspan=2, sticky="w", pady=4)
+
         ttk.Button(self.main_frame, text="Simulation starten", command=self.run_simulation).grid(row=13, column=0, columnspan=2, sticky="ew", pady=8)
         ttk.Button(
             self.main_frame,
@@ -129,15 +147,6 @@ class RadarGUI:
             ),
         ).grid(row=14, column=0, sticky="ew", pady=4)
         ttk.Button(self.main_frame, text="Heatmap exportieren", command=self.export_heatmap).grid(row=14, column=1, sticky="ew", pady=4)
-
-        self.live_mode = tk.BooleanVar(value=False)
-        ttk.Checkbutton(
-            self.main_frame,
-            text="Live Simulation (experimentell)",
-            variable=self.live_mode,
-            style="TCheckbutton",
-            command=self.toggle_live_mode,
-        ).grid(row=12, column=0, columnspan=2, sticky="w", pady=4)
 
     # ------------------------------------------------------------------
     # Event handlers
@@ -235,6 +244,45 @@ class RadarGUI:
         except Exception as exc:  # noqa: BLE001
             messagebox.showerror("Fehler bei Simulation", f"Fehler während der Simulation:\n{exc}")
 
+    def preview_nctr(self) -> None:
+        if self.mesh is None:
+            messagebox.showwarning("Kein Modell", "Kein Modell geladen.")
+            return
+
+        try:
+            material = MATERIAL_DB[self.material_var.get()]
+            freq = self.freq_scale.get() / 1000
+            rotated = self._rotated_mesh()
+            prf = 1800.0
+            times, doppler_freqs, spec_db, envelope = simulate_nctr_signature(
+                rotated,
+                material,
+                freq,
+                yaw=self.yaw.get(),
+                pitch=self.pitch.get(),
+                roll=self.roll.get(),
+                prf=prf,
+            )
+            self.last_nctr = (times, doppler_freqs, spec_db, envelope)
+
+            fig, (ax_env, ax_spec) = plt.subplots(2, 1, figsize=(8, 6))
+            ax_env.plot(np.arange(len(envelope)) / prf, envelope)
+            ax_env.set_title("Puls-Hüllkurve (dB)")
+            ax_env.set_xlabel("Zeit (s)")
+            ax_env.set_ylabel("Amplitude")
+            ax_env.grid(True, alpha=0.3)
+
+            t_grid, f_grid = np.meshgrid(times, doppler_freqs)
+            pcm = ax_spec.pcolormesh(t_grid, f_grid, spec_db, shading="auto", cmap="magma")
+            ax_spec.set_title("NCTR Mikrodoppler-Spektrogramm")
+            ax_spec.set_xlabel("Zeit (s)")
+            ax_spec.set_ylabel("Dopplerfrequenz (Hz)")
+            fig.colorbar(pcm, ax=ax_spec, label="Leistung (dB)")
+            fig.tight_layout()
+            plt.show()
+        except Exception as exc:  # noqa: BLE001
+            messagebox.showerror("NCTR-Fehler", f"Die NCTR-Simulation ist fehlgeschlagen:\n{exc}")
+
     # ------------------------------------------------------------------
     # Visualization helpers
     def _rotated_mesh(self) -> trimesh.Trimesh:
@@ -324,7 +372,7 @@ class RadarGUI:
             if not live:
                 messagebox.showerror("Fehler beim Export", f"Fehler beim Exportieren der CSV:\n{exc}")
 
-def export_heatmap(self, export_dir: Path | None = None, live: bool = False) -> None:
+    def export_heatmap(self, export_dir: Path | None = None, live: bool = False) -> None:
         if self.last_rcs is None:
             return
 
@@ -356,6 +404,33 @@ def export_heatmap(self, export_dir: Path | None = None, live: bool = False) -> 
                     self.master.after(0, lambda e=exc: messagebox.showerror("Fehler beim Export", f"Fehler beim Exportieren der Heatmap:\n{e}"))
 
         threading.Thread(target=worker, daemon=True).start()
+
+    def export_nctr_signature(self) -> None:
+        if self.last_nctr is None:
+            messagebox.showwarning("Kein NCTR", "Bitte zuerst eine NCTR-Vorschau berechnen.")
+            return
+
+        times, doppler_freqs, spec_db, envelope = self.last_nctr
+        file_path = filedialog.asksaveasfilename(
+            defaultextension=".csv", filetypes=[("CSV files", "*.csv")], title="NCTR-Signatur speichern"
+        )
+        if not file_path:
+            return
+
+        try:
+            with open(file_path, "w", newline="") as f:
+                writer = csv.writer(f)
+                writer.writerow(["time_s"] + [f"doppler_{freq:.1f}Hz" for freq in doppler_freqs])
+                for t_idx, t_val in enumerate(times):
+                    writer.writerow([t_val, *spec_db[:, t_idx]])
+
+                writer.writerow([])
+                writer.writerow(["pulse_envelope_db"])
+                writer.writerow([f"{val:.4f}" for val in envelope])
+
+            messagebox.showinfo("Export erfolgreich", f"NCTR-Signatur gespeichert als {os.path.basename(file_path)}")
+        except Exception as exc:  # noqa: BLE001
+            messagebox.showerror("Exportfehler", f"NCTR-Daten konnten nicht gespeichert werden:\n{exc}")
 
 
 def run_app() -> None:
