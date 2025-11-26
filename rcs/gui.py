@@ -324,7 +324,7 @@ class RadarGUI:
             if not live:
                 messagebox.showerror("Fehler beim Export", f"Fehler beim Exportieren der CSV:\n{exc}")
 
-    def export_heatmap(self, export_dir: Path | None = None, live: bool = False) -> None:
+def export_heatmap(self, export_dir: Path | None = None, live: bool = False) -> None:
         if self.last_rcs is None:
             return
 
@@ -358,4 +358,10 @@ class RadarGUI:
         threading.Thread(target=worker, daemon=True).start()
 
 
-__all__ = ["RadarGUI"]
+def run_app() -> None:
+    root = tk.Tk()
+    RadarGUI(root)
+    root.mainloop()
+
+
+__all__ = ["RadarGUI", "run_app"]

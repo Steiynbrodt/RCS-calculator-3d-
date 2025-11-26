@@ -1,16 +1,8 @@
-"""Entry point for launching the Radar RCS GUI."""
+"""Compatibility launcher that forwards to the package entrypoint."""
 
 from __future__ import annotations
 
-import tkinter as tk
-
-from .gui import RadarGUI
-
-
-def main() -> None:
-    root = tk.Tk()
-    RadarGUI(root)
-    root.mainloop()
+from rcs.main import main
 
 
 if __name__ == "__main__":
