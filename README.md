@@ -19,6 +19,13 @@ project files, or captured as NCTR-style signature templates for later matching.
 pip install -r requirements.txt
 ```
 
+If you see an error about missing Qt binding modules (PyQt5/PySide2), install
+PyQt5 manually:
+
+```bash
+pip install PyQt5
+```
+
 ## Running the GUI
 ```bash
 python -m rcs.main
