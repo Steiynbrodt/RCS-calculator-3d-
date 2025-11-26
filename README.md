@@ -24,6 +24,7 @@ Load an STL/OBJ/GLB/GLTF model, select a material and radar preset, then start t
 - Surface-roughness and speckle sliders plus an optional random seed to add grain when plots look overly smooth.
 - Rotor/NCTR helpers (blade count and RPM) and compressor blade inputs that estimate micro-Doppler lines and carry them into templates for recognition workflows.
 - An engine/prop placement table that marks nacelles/props on the 3D preview, saves them with projects/templates, and includes an auto-pair helper along the fuselage X-axis.
+- A bundled F-16A article-style reference dataset (9.6 GHz) that you can load from **Reference data → Load F-16A article-style dataset** to compare your own meshes against the blog example without re-running a simulation.
 
 ### NCTR preview
 Use the **NCTR-Vorschau** button to generate a micro-Doppler signature preview. The resulting spectrogram can be exported as CSV and reused as a simple NCTR template for aircraft identification workflows.

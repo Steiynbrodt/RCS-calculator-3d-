@@ -16,6 +16,7 @@ from PyQt5 import QtCore, QtWidgets
 from ..materials import MaterialDatabase
 from ..project_io import ProjectState, load_project, save_project
 from ..radar_profiles import RADAR_PROFILES, RadarProfile
+from ..reference_data import ReferenceDataset, list_reference_datasets
 from ..rcs_engine import (
     BAND_DEFAULTS,
     EngineMount,
@@ -76,6 +77,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.material_db = MaterialDatabase()
         self.template_lib = TemplateLibrary()
         self.engine = RCSEngine()
+        self.reference_sets: list[ReferenceDataset] = list_reference_datasets()
 
         self.mesh: Optional[trimesh.Trimesh] = None
         self.mesh_path: Optional[Path] = None
@@ -406,6 +408,9 @@ class MainWindow(QtWidgets.QMainWindow):
         templates_menu.addAction(self.create_template_btn.text(), self._create_template)
         templates_menu.addAction(self.match_template_btn.text(), self._match_templates)
 
+        reference_menu = self.menuBar().addMenu("Reference data")
+        reference_action = reference_menu.addAction("Load F-16A article-style dataset")
+
         open_action.triggered.connect(self._open_mesh)
         save_project_action.triggered.connect(self._save_project)
         load_project_action.triggered.connect(self._load_project)
@@ -413,6 +418,7 @@ class MainWindow(QtWidgets.QMainWindow):
         export_plot_action.triggered.connect(self._export_plots)
         exit_action.triggered.connect(self.close)
         edit_materials_action.triggered.connect(self._edit_materials)
+        reference_action.triggered.connect(self._load_reference_dataset)
 
     # ------------------------------------------------------------------
     def _update_band_defaults(self) -> None:
@@ -598,8 +604,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self.status_label.setText("Failed")
 
     def _on_simulation_finished(self, result: SimulationResult) -> None:
+        self._display_result(result, "Simulation complete")
+
+    def _display_result(self, result: SimulationResult, status: str) -> None:
         self.result = result
-        status = "Simulation complete"
         if result.micro_doppler_hz is not None and len(result.micro_doppler_hz) > 0:
             lo = float(np.min(result.micro_doppler_hz))
             hi = float(np.max(result.micro_doppler_hz))
@@ -612,6 +620,29 @@ class MainWindow(QtWidgets.QMainWindow):
         self._update_polar_plot()
         self._update_rcs_plot()
         self._draw_mesh_preview()
+
+    def _load_reference_dataset(self) -> None:
+        if not self.reference_sets:
+            QtWidgets.QMessageBox.information(self, "No reference data", "No bundled datasets available.")
+            return
+        labels = [ref.name for ref in self.reference_sets]
+        choice, ok = QtWidgets.QInputDialog.getItem(
+            self,
+            "Reference dataset",
+            "Select an article-style dataset to load",
+            labels,
+            0,
+            False,
+        )
+        if not ok or not choice:
+            return
+        ref = next(r for r in self.reference_sets if r.name == choice)
+        self._display_result(ref.result, f"Loaded reference dataset: {ref.name}")
+        QtWidgets.QMessageBox.information(
+            self,
+            ref.name,
+            f"{ref.note}\n\nSource: {ref.source}\nConfigured as {ref.result.band}-band at {ref.result.frequencies_hz[0]/1e9:.2f} GHz",
+        )
 
     # ------------------------------------------------------------------
     def _draw_mesh_preview(self) -> None:
