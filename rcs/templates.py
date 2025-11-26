@@ -44,11 +44,28 @@ class SignatureTemplate:
 
 
 class TemplateLibrary:
-    """Manage a directory of signature templates."""
+    """Manage a directory of signature templates.
 
-    def __init__(self, directory: str | Path = "templates") -> None:
-        self.directory = Path(directory)
-        self.directory.mkdir(parents=True, exist_ok=True)
+    By default templates are stored in a user-writable directory under the
+    current user's home folder to avoid permission errors when the working
+    directory is read-only.
+    """
+
+    def __init__(self, directory: str | Path | None = None) -> None:
+        preferred = Path(directory) if directory else Path.home() / ".rcs" / "templates"
+        self.directory = self._ensure_directory(preferred, directory_provided=directory is not None)
+
+    def _ensure_directory(self, path: Path, *, directory_provided: bool) -> Path:
+        try:
+            path.mkdir(parents=True, exist_ok=True)
+            return path
+        except PermissionError:
+            if directory_provided:
+                # Caller explicitly requested this directory; propagate the error.
+                raise
+            fallback = Path.home() / ".rcs" / "templates"
+            fallback.mkdir(parents=True, exist_ok=True)
+            return fallback
 
     def list_templates(self) -> list[Path]:
         return sorted(self.directory.glob("*.json"))
