@@ -1,4 +1,4 @@
-"""Entry point for launching the PyQt RCS GUI."""
+"""Entry point for launching the Radar RCS GUI."""
 
 from __future__ import annotations
 
