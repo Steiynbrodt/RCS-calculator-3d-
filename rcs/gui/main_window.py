@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 from typing import Optional
 
 import matplotlib.pyplot as plt
+from matplotlib import colors as mcolors
 import numpy as np
 import trimesh
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg
@@ -27,6 +29,16 @@ from ..rcs_engine import (
     SimulationSettings,
 )
 from ..templates import TemplateLibrary
+
+
+RADAR_CMAPS = {
+    "Radar (green/yellow)": mcolors.LinearSegmentedColormap.from_list(
+        "radar",
+        ["#012b25", "#0c6c4f", "#1fa64c", "#7bd449", "#f6f259", "#f4a259", "#e64747"],
+    ),
+    "Viridis": plt.cm.viridis,
+    "Inferno": plt.cm.inferno,
+}
 
 
 class SimulationWorker(QtCore.QThread):
@@ -64,7 +76,6 @@ class PlotCanvas(FigureCanvasQTAgg):
 
     def clear(self) -> None:
         self.figure.clf()
-        self.ax = self.figure.add_subplot(111)
         self.draw_idle()
 
 
@@ -148,6 +159,38 @@ class MainWindow(QtWidgets.QMainWindow):
         rcs_layout.addLayout(rcs_controls)
         rcs_layout.addWidget(self.rcs3d_canvas)
         self.tabs.addTab(rcs_tab, "3D RCS")
+
+        # Radar-like heatmap tab
+        self.radar_canvas = PlotCanvas()
+        radar_tab = QtWidgets.QWidget()
+        radar_layout = QtWidgets.QVBoxLayout(radar_tab)
+        radar_controls = QtWidgets.QHBoxLayout()
+        self.radar_mode = QtWidgets.QComboBox()
+        self.radar_mode.addItems(["Selected frequency", "Median of sweep", "All frequencies grid"])
+        self.radar_freq_selector = QtWidgets.QComboBox()
+        self.radar_freq_selector.setEnabled(False)
+        self.radar_cmap = QtWidgets.QComboBox()
+        self.radar_cmap.addItems(list(RADAR_CMAPS.keys()))
+        self.radar_clip_min = QtWidgets.QDoubleSpinBox()
+        self.radar_clip_min.setRange(-120, 120)
+        self.radar_clip_min.setValue(-50)
+        self.radar_clip_max = QtWidgets.QDoubleSpinBox()
+        self.radar_clip_max.setRange(-120, 120)
+        self.radar_clip_max.setValue(20)
+        radar_controls.addWidget(QtWidgets.QLabel("View:"))
+        radar_controls.addWidget(self.radar_mode)
+        radar_controls.addWidget(QtWidgets.QLabel("Freq:"))
+        radar_controls.addWidget(self.radar_freq_selector)
+        radar_controls.addWidget(QtWidgets.QLabel("Colormap:"))
+        radar_controls.addWidget(self.radar_cmap)
+        radar_controls.addWidget(QtWidgets.QLabel("Min dB:"))
+        radar_controls.addWidget(self.radar_clip_min)
+        radar_controls.addWidget(QtWidgets.QLabel("Max dB:"))
+        radar_controls.addWidget(self.radar_clip_max)
+        radar_controls.addStretch(1)
+        radar_layout.addLayout(radar_controls)
+        radar_layout.addWidget(self.radar_canvas)
+        self.tabs.addTab(radar_tab, "Radar heatmap")
 
         # Templates tab
         self.templates_table = QtWidgets.QTableWidget(0, 4)
@@ -388,6 +431,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self.clip_min.valueChanged.connect(self._update_rcs_plot)
         self.clip_max.valueChanged.connect(self._update_rcs_plot)
         self.freq_selector.currentIndexChanged.connect(self._update_rcs_plot)
+        self.freq_selector.currentIndexChanged.connect(self._sync_radar_frequency)
+        self.radar_mode.currentTextChanged.connect(self._update_radar_heatmap)
+        self.radar_freq_selector.currentIndexChanged.connect(self._update_radar_heatmap)
+        self.radar_cmap.currentTextChanged.connect(self._update_radar_heatmap)
+        self.radar_clip_min.valueChanged.connect(self._update_radar_heatmap)
+        self.radar_clip_max.valueChanged.connect(self._update_radar_heatmap)
         self.add_mount_btn.clicked.connect(self._add_engine_mount)
         self.remove_mount_btn.clicked.connect(self._remove_engine_mount)
         self.guess_mount_btn.clicked.connect(self._guess_engine_mounts)
@@ -617,8 +666,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self.status_label.setText(status)
         self.progress.setValue(100)
         self._populate_frequency_selector(result.frequencies_hz)
+        self._populate_radar_freq_selector(result.frequencies_hz)
         self._update_polar_plot()
         self._update_rcs_plot()
+        self._update_radar_heatmap()
         self._draw_mesh_preview()
 
     def _load_reference_dataset(self) -> None:
@@ -705,6 +756,25 @@ class MainWindow(QtWidgets.QMainWindow):
         self.freq_selector.setCurrentIndex(0)
         self.freq_selector.blockSignals(False)
 
+    def _populate_radar_freq_selector(self, freqs: np.ndarray) -> None:
+        self.radar_freq_selector.blockSignals(True)
+        self.radar_freq_selector.clear()
+        for freq in freqs:
+            self.radar_freq_selector.addItem(f"{freq/1e9:.2f} GHz")
+        self.radar_freq_selector.setEnabled(len(freqs) > 1)
+        self.radar_freq_selector.setCurrentIndex(0)
+        self.radar_freq_selector.blockSignals(False)
+
+    def _sync_radar_frequency(self, index: int) -> None:
+        if self.radar_mode.currentText() != "Selected frequency":
+            self._update_radar_heatmap()
+            return
+        if 0 <= index < self.radar_freq_selector.count():
+            self.radar_freq_selector.blockSignals(True)
+            self.radar_freq_selector.setCurrentIndex(index)
+            self.radar_freq_selector.blockSignals(False)
+        self._update_radar_heatmap()
+
     def _update_rcs_plot(self) -> None:
         if self.result is None:
             return
@@ -735,6 +805,77 @@ class MainWindow(QtWidgets.QMainWindow):
         ax.set_title(title)
         ax.set_box_aspect((1, 1, 1))
         self.rcs3d_canvas.draw_idle()
+
+    def _update_radar_heatmap(self) -> None:
+        if self.result is None:
+            return
+        self.radar_canvas.clear()
+        freqs = self.result.frequencies_hz
+        az = self.result.azimuth_deg
+        el = self.result.elevation_deg
+        vmin = self.radar_clip_min.value()
+        vmax = self.radar_clip_max.value()
+        cmap = RADAR_CMAPS.get(self.radar_cmap.currentText(), plt.cm.viridis)
+
+        def _draw(ax: plt.Axes, data: np.ndarray, title: str) -> plt.AxesImage:
+            clipped = np.clip(data, vmin, vmax)
+            im = ax.imshow(
+                clipped,
+                origin="lower",
+                extent=(float(az.min()), float(az.max()), float(el.min()), float(el.max())),
+                aspect="auto",
+                cmap=cmap,
+                vmin=vmin,
+                vmax=vmax,
+            )
+            ax.set_xlabel("Azimuth (deg)")
+            ax.set_ylabel("Elevation (deg)")
+            ax.set_title(title, fontsize=10)
+            ax.grid(color="white", alpha=0.25, linestyle="--", linewidth=0.6)
+            for ring in np.linspace(el.min(), el.max(), 5):
+                ax.axhline(ring, color="white", alpha=0.15, linewidth=0.5)
+            return im
+
+        mode = self.radar_mode.currentText()
+        if mode == "All frequencies grid" and len(freqs) > 1:
+            cols = min(3, len(freqs))
+            rows = math.ceil(len(freqs) / cols)
+            axes = self.radar_canvas.figure.subplots(rows, cols, squeeze=False)
+            im = None
+            for idx, freq in enumerate(freqs):
+                r, c = divmod(idx, cols)
+                ax = axes[r][c]
+                im = _draw(ax, self.result.rcs_dbsm[idx], f"{freq/1e9:.2f} GHz")
+            # hide unused axes
+            for unused in range(len(freqs), rows * cols):
+                r, c = divmod(unused, cols)
+                axes[r][c].axis("off")
+            if im is not None:
+                self.radar_canvas.figure.colorbar(
+                    im, ax=self.radar_canvas.figure.axes, shrink=0.65, label="RCS (dBsm)"
+                )
+        else:
+            ax = self.radar_canvas.figure.add_subplot(111)
+            if mode == "Median of sweep" and len(freqs) > 1:
+                data = np.median(self.result.rcs_dbsm, axis=0)
+                title = "Median across sweep"
+            else:
+                idx = self.radar_freq_selector.currentIndex()
+                idx = max(0, min(idx, len(freqs) - 1))
+                data = self.result.rcs_dbsm[idx]
+                title = f"{freqs[idx]/1e9:.2f} GHz"
+            im = _draw(ax, data, title)
+            self.radar_canvas.figure.colorbar(im, ax=ax, shrink=0.7, label="RCS (dBsm)")
+
+        meta = []
+        if self.result.radar_profile:
+            meta.append(self.result.radar_profile)
+        meta.append(f"{self.result.band}-band {self.result.polarization}")
+        if self.result.target_speed_mps:
+            meta.append(f"Speed {self.result.target_speed_mps:.0f} m/s")
+        meta.append(f"Az {az.min():.0f}–{az.max():.0f}°, El {el.min():.0f}–{el.max():.0f}°")
+        self.radar_canvas.figure.suptitle(" / ".join(meta), fontsize=11)
+        self.radar_canvas.draw_idle()
 
     # ------------------------------------------------------------------
     def _refresh_templates(self) -> None:
