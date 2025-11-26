@@ -26,10 +26,6 @@ PyQt5 manually:
 pip install PyQt5
 ```
 
-On some systems the PyQt5 import can fail with a `libGL` error. Install your
-distribution's OpenGL runtime (e.g., `sudo apt install libgl1` on Debian/Ubuntu
-or `sudo yum install mesa-libGL` on Fedora/RHEL) before launching the GUI.
-
 ## Running the GUI
 ```bash
 python -m rcs.main
