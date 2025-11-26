@@ -54,6 +54,27 @@ RADAR_PROFILES: dict[str, RadarProfile] = {
     "IRIS-T SLM TRML-4D (S-band 3.5 GHz)": RadarProfile(
         name="IRIS-T SLM TRML-4D (S-band 3.5 GHz)", band="S", frequency_ghz=3.5, polarization="H"
     ),
+    "SA-2 Fan Song (E-band 2.7 GHz)": RadarProfile(
+        name="SA-2 Fan Song (E-band 2.7 GHz)", band="S", frequency_ghz=2.7, polarization="H/V", max_reflections=3
+    ),
+    "S-125 Low Blow (X-band 9.4 GHz)": RadarProfile(
+        name="S-125 Low Blow (X-band 9.4 GHz)", band="X", frequency_ghz=9.4, polarization="H/V", max_reflections=3
+    ),
+    "2K12 Kub Straight Flush (C-band 5.5 GHz)": RadarProfile(
+        name="2K12 Kub Straight Flush (C-band 5.5 GHz)", band="C", frequency_ghz=5.5, polarization="H/V", max_reflections=3
+    ),
+    "Aegis AN/SPY-1 (S-band sweep)": RadarProfile(
+        name="Aegis AN/SPY-1 (S-band sweep)",
+        band="S",
+        sweep_start_ghz=3.1,
+        sweep_stop_ghz=3.5,
+        sweep_steps=5,
+        polarization="H/V",
+        max_reflections=5,
+    ),
+    "Giraffe AMB (C-band 5.4 GHz)": RadarProfile(
+        name="Giraffe AMB (C-band 5.4 GHz)", band="C", frequency_ghz=5.4, polarization="H", max_reflections=3
+    ),
 }
 
 

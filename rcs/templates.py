@@ -89,6 +89,16 @@ class TemplateLibrary:
         meta = meta or {}
         meta.setdefault("radar_profile", result.radar_profile)
         meta.setdefault("target_speed_mps", result.target_speed_mps)
+        meta.setdefault("surface_roughness_db", result.surface_roughness_db)
+        meta.setdefault("speckle_db", result.speckle_db)
+        meta.setdefault("blade_count", result.blade_count)
+        meta.setdefault("blade_rpm", result.blade_rpm)
+        meta.setdefault("compressor_blades", result.compressor_blades)
+        meta.setdefault("compressor_rpm", result.compressor_rpm)
+        if result.engine_mounts:
+            meta.setdefault("engine_mounts", [asdict(m) for m in result.engine_mounts])
+        if result.micro_doppler_hz is not None:
+            meta.setdefault("micro_doppler_hz", result.micro_doppler_hz.tolist())
         return SignatureTemplate(
             name=name,
             target_class=target_class,

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from typing import Iterable, Sequence
 
 import numpy as np
@@ -51,6 +51,14 @@ class SimulationSettings:
     azimuth_slice_deg: float | None = None
     target_speed_mps: float = 0.0
     radar_profile: str | None = None
+    surface_roughness_db: float = 0.0
+    speckle_db: float = 0.0
+    random_seed: int | None = None
+    blade_count: int = 0
+    blade_rpm: float = 0.0
+    compressor_blades: int = 0
+    compressor_rpm: float = 0.0
+    engine_mounts: list[EngineMount] = field(default_factory=list)
 
     def frequencies(self) -> np.ndarray:
         if self.frequency_hz is not None:
@@ -94,6 +102,24 @@ class SimulationResult:
     target_speed_mps: float
     radar_profile: str | None = None
     doppler_hz: np.ndarray | None = None
+    surface_roughness_db: float = 0.0
+    speckle_db: float = 0.0
+    blade_count: int = 0
+    blade_rpm: float = 0.0
+    compressor_blades: int = 0
+    compressor_rpm: float = 0.0
+    micro_doppler_hz: np.ndarray | None = None
+    engine_mounts: list[EngineMount] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class EngineMount:
+    """User-specified engine/propeller placement on the mesh."""
+
+    kind: str
+    x: float
+    y: float
+    z: float
 
     def slice_for_elevation(self, elevation: float) -> tuple[np.ndarray, np.ndarray]:
         idx = int(np.argmin(np.abs(self.elevation_deg - elevation)))
@@ -124,6 +150,8 @@ class RCSEngine:
             raise ValueError("A mesh must be provided for simulation.")
         if not hasattr(mesh, "ray"):
             mesh.ray = build_ray_intersector(mesh)
+
+        rng = np.random.default_rng(settings.random_seed)
 
         freqs = settings.frequencies()
         az = settings.azimuths()
@@ -178,11 +206,38 @@ class RCSEngine:
                 rcs_lin[idx] = max(contribution, 1e-10)
 
             rcs_db = 10 * np.log10(rcs_lin.reshape(len(el), len(az)))
+            if settings.surface_roughness_db > 0:
+                rcs_db = rcs_db + rng.normal(
+                    0.0, settings.surface_roughness_db, size=rcs_db.shape
+                )
+            if settings.speckle_db > 0:
+                speckle = rng.normal(0.0, settings.speckle_db, size=rcs_db.shape)
+                # Introduce slight correlation so the texture isn't fully white noise
+                speckle = (
+                    speckle
+                    + np.roll(speckle, 1, axis=0)
+                    + np.roll(speckle, -1, axis=0)
+                    + np.roll(speckle, 1, axis=1)
+                    + np.roll(speckle, -1, axis=1)
+                ) / 5.0
+                rcs_db = rcs_db + speckle
             rcs_all[fi] = rcs_db
             if progress:
                 progress(int((fi + 1) / len(freqs) * 100))
 
         self._stop_requested = False
+        micro_components: list[np.ndarray] = []
+        if settings.blade_count > 0 and settings.blade_rpm > 0:
+            fundamental = settings.blade_count * settings.blade_rpm / 60.0
+            harmonics = min(settings.blade_count + 2, 8)
+            micro_components.append(fundamental * np.arange(1, harmonics))
+        if settings.compressor_blades > 0 and settings.compressor_rpm > 0:
+            comp_fundamental = settings.compressor_blades * settings.compressor_rpm / 60.0
+            comp_harmonics = min(settings.compressor_blades * 2 + 2, 18)
+            micro_components.append(comp_fundamental * np.arange(1, comp_harmonics))
+        micro_doppler = (
+            np.unique(np.concatenate(micro_components)) if micro_components else None
+        )
         return SimulationResult(
             band=settings.band,
             polarization=settings.polarization,
@@ -193,12 +248,21 @@ class RCSEngine:
             target_speed_mps=settings.target_speed_mps,
             radar_profile=settings.radar_profile,
             doppler_hz=doppler_all,
+            surface_roughness_db=settings.surface_roughness_db,
+            speckle_db=settings.speckle_db,
+            blade_count=settings.blade_count,
+            blade_rpm=settings.blade_rpm,
+            compressor_blades=settings.compressor_blades,
+            compressor_rpm=settings.compressor_rpm,
+            micro_doppler_hz=micro_doppler,
+            engine_mounts=settings.engine_mounts,
         )
 
 
 __all__ = [
     "BAND_DEFAULTS",
     "FrequencySweep",
+    "EngineMount",
     "SimulationSettings",
     "Material",
     "SimulationResult",

@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 from typing import Optional
 
 import matplotlib.pyplot as plt
+from matplotlib import colors as mcolors
 import numpy as np
 import trimesh
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg
@@ -16,8 +18,27 @@ from PyQt5 import QtCore, QtWidgets
 from ..materials import MaterialDatabase
 from ..project_io import ProjectState, load_project, save_project
 from ..radar_profiles import RADAR_PROFILES, RadarProfile
-from ..rcs_engine import BAND_DEFAULTS, FrequencySweep, Material, RCSEngine, SimulationResult, SimulationSettings
+from ..reference_data import ReferenceDataset, list_reference_datasets
+from ..rcs_engine import (
+    BAND_DEFAULTS,
+    EngineMount,
+    FrequencySweep,
+    Material,
+    RCSEngine,
+    SimulationResult,
+    SimulationSettings,
+)
 from ..templates import TemplateLibrary
+
+
+RADAR_CMAPS = {
+    "Radar (green/yellow)": mcolors.LinearSegmentedColormap.from_list(
+        "radar",
+        ["#012b25", "#0c6c4f", "#1fa64c", "#7bd449", "#f6f259", "#f4a259", "#e64747"],
+    ),
+    "Viridis": plt.cm.viridis,
+    "Inferno": plt.cm.inferno,
+}
 
 
 class SimulationWorker(QtCore.QThread):
@@ -55,7 +76,6 @@ class PlotCanvas(FigureCanvasQTAgg):
 
     def clear(self) -> None:
         self.figure.clf()
-        self.ax = self.figure.add_subplot(111)
         self.draw_idle()
 
 
@@ -68,6 +88,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.material_db = MaterialDatabase()
         self.template_lib = TemplateLibrary()
         self.engine = RCSEngine()
+        self.reference_sets: list[ReferenceDataset] = list_reference_datasets()
 
         self.mesh: Optional[trimesh.Trimesh] = None
         self.mesh_path: Optional[Path] = None
@@ -138,6 +159,38 @@ class MainWindow(QtWidgets.QMainWindow):
         rcs_layout.addLayout(rcs_controls)
         rcs_layout.addWidget(self.rcs3d_canvas)
         self.tabs.addTab(rcs_tab, "3D RCS")
+
+        # Radar-like heatmap tab
+        self.radar_canvas = PlotCanvas()
+        radar_tab = QtWidgets.QWidget()
+        radar_layout = QtWidgets.QVBoxLayout(radar_tab)
+        radar_controls = QtWidgets.QHBoxLayout()
+        self.radar_mode = QtWidgets.QComboBox()
+        self.radar_mode.addItems(["Selected frequency", "Median of sweep", "All frequencies grid"])
+        self.radar_freq_selector = QtWidgets.QComboBox()
+        self.radar_freq_selector.setEnabled(False)
+        self.radar_cmap = QtWidgets.QComboBox()
+        self.radar_cmap.addItems(list(RADAR_CMAPS.keys()))
+        self.radar_clip_min = QtWidgets.QDoubleSpinBox()
+        self.radar_clip_min.setRange(-120, 120)
+        self.radar_clip_min.setValue(-50)
+        self.radar_clip_max = QtWidgets.QDoubleSpinBox()
+        self.radar_clip_max.setRange(-120, 120)
+        self.radar_clip_max.setValue(20)
+        radar_controls.addWidget(QtWidgets.QLabel("View:"))
+        radar_controls.addWidget(self.radar_mode)
+        radar_controls.addWidget(QtWidgets.QLabel("Freq:"))
+        radar_controls.addWidget(self.radar_freq_selector)
+        radar_controls.addWidget(QtWidgets.QLabel("Colormap:"))
+        radar_controls.addWidget(self.radar_cmap)
+        radar_controls.addWidget(QtWidgets.QLabel("Min dB:"))
+        radar_controls.addWidget(self.radar_clip_min)
+        radar_controls.addWidget(QtWidgets.QLabel("Max dB:"))
+        radar_controls.addWidget(self.radar_clip_max)
+        radar_controls.addStretch(1)
+        radar_layout.addLayout(radar_controls)
+        radar_layout.addWidget(self.radar_canvas)
+        self.tabs.addTab(radar_tab, "Radar heatmap")
 
         # Templates tab
         self.templates_table = QtWidgets.QTableWidget(0, 4)
@@ -269,6 +322,89 @@ class MainWindow(QtWidgets.QMainWindow):
         self.reflections_spin.setValue(3)
         form.addRow("Max reflections:", self.reflections_spin)
 
+        # Surface roughness / randomness
+        self.roughness_spin = QtWidgets.QDoubleSpinBox()
+        self.roughness_spin.setRange(0.0, 20.0)
+        self.roughness_spin.setSingleStep(0.5)
+        self.roughness_spin.setDecimals(2)
+        self.roughness_spin.setValue(0.0)
+        form.addRow("Surface roughness (dB σ):", self.roughness_spin)
+        self.speckle_spin = QtWidgets.QDoubleSpinBox()
+        self.speckle_spin.setRange(0.0, 20.0)
+        self.speckle_spin.setSingleStep(0.5)
+        self.speckle_spin.setDecimals(2)
+        self.speckle_spin.setValue(3.0)
+        form.addRow("Speckle grain (dB σ):", self.speckle_spin)
+        self.seed_spin = QtWidgets.QSpinBox()
+        self.seed_spin.setRange(0, 1_000_000)
+        self.seed_spin.setValue(0)
+        self.seed_spin.setSpecialValueText("Auto")
+        form.addRow("Noise seed (optional):", self.seed_spin)
+
+        # NCTR rotor cues
+        rotor_layout = QtWidgets.QGridLayout()
+        self.blade_spin = QtWidgets.QSpinBox()
+        self.blade_spin.setRange(0, 12)
+        self.blade_spin.setValue(0)
+        self.blade_rpm = QtWidgets.QDoubleSpinBox()
+        self.blade_rpm.setRange(0.0, 12000.0)
+        self.blade_rpm.setSingleStep(50.0)
+        rotor_layout.addWidget(QtWidgets.QLabel("Blades"), 0, 0)
+        rotor_layout.addWidget(self.blade_spin, 0, 1)
+        rotor_layout.addWidget(QtWidgets.QLabel("RPM"), 1, 0)
+        rotor_layout.addWidget(self.blade_rpm, 1, 1)
+        form.addRow("NCTR rotor/hub:", rotor_layout)
+
+        compressor_layout = QtWidgets.QGridLayout()
+        self.compressor_blades = QtWidgets.QSpinBox()
+        self.compressor_blades.setRange(0, 60)
+        self.compressor_blades.setValue(0)
+        self.compressor_rpm = QtWidgets.QDoubleSpinBox()
+        self.compressor_rpm.setRange(0.0, 30000.0)
+        self.compressor_rpm.setSingleStep(100.0)
+        compressor_layout.addWidget(QtWidgets.QLabel("Blades"), 0, 0)
+        compressor_layout.addWidget(self.compressor_blades, 0, 1)
+        compressor_layout.addWidget(QtWidgets.QLabel("RPM"), 1, 0)
+        compressor_layout.addWidget(self.compressor_rpm, 1, 1)
+        form.addRow("NCTR compressor:", compressor_layout)
+
+        # Engine / prop locations
+        mount_box = QtWidgets.QGroupBox("Engine / prop placement")
+        mount_layout = QtWidgets.QVBoxLayout(mount_box)
+        mount_controls = QtWidgets.QGridLayout()
+        self.mount_kind = QtWidgets.QComboBox()
+        self.mount_kind.addItems(["Engine", "Propeller"])
+        self.mount_x = QtWidgets.QDoubleSpinBox()
+        self.mount_y = QtWidgets.QDoubleSpinBox()
+        self.mount_z = QtWidgets.QDoubleSpinBox()
+        for spin in (self.mount_x, self.mount_y, self.mount_z):
+            spin.setRange(-10_000.0, 10_000.0)
+            spin.setDecimals(3)
+            spin.setSingleStep(0.1)
+        self.mount_x.setSuffix(" m")
+        self.mount_y.setSuffix(" m")
+        self.mount_z.setSuffix(" m")
+        self.add_mount_btn = QtWidgets.QPushButton("Add / update")
+        self.remove_mount_btn = QtWidgets.QPushButton("Remove selected")
+        self.guess_mount_btn = QtWidgets.QPushButton("Auto-place pair")
+        mount_controls.addWidget(QtWidgets.QLabel("Type"), 0, 0)
+        mount_controls.addWidget(self.mount_kind, 0, 1)
+        mount_controls.addWidget(QtWidgets.QLabel("X"), 1, 0)
+        mount_controls.addWidget(self.mount_x, 1, 1)
+        mount_controls.addWidget(QtWidgets.QLabel("Y"), 2, 0)
+        mount_controls.addWidget(self.mount_y, 2, 1)
+        mount_controls.addWidget(QtWidgets.QLabel("Z"), 3, 0)
+        mount_controls.addWidget(self.mount_z, 3, 1)
+        mount_controls.addWidget(self.add_mount_btn, 4, 0)
+        mount_controls.addWidget(self.remove_mount_btn, 4, 1)
+        mount_controls.addWidget(self.guess_mount_btn, 5, 0, 1, 2)
+        mount_layout.addLayout(mount_controls)
+        self.mount_table = QtWidgets.QTableWidget(0, 4)
+        self.mount_table.setHorizontalHeaderLabels(["Type", "X", "Y", "Z"])
+        self.mount_table.horizontalHeader().setStretchLastSection(True)
+        mount_layout.addWidget(self.mount_table)
+        form.addRow("Engines/props:", mount_box)
+
         # Material selection
         self.material_combo = QtWidgets.QComboBox()
         self.material_combo.addItems(self.material_db.names())
@@ -295,6 +431,15 @@ class MainWindow(QtWidgets.QMainWindow):
         self.clip_min.valueChanged.connect(self._update_rcs_plot)
         self.clip_max.valueChanged.connect(self._update_rcs_plot)
         self.freq_selector.currentIndexChanged.connect(self._update_rcs_plot)
+        self.freq_selector.currentIndexChanged.connect(self._sync_radar_frequency)
+        self.radar_mode.currentTextChanged.connect(self._update_radar_heatmap)
+        self.radar_freq_selector.currentIndexChanged.connect(self._update_radar_heatmap)
+        self.radar_cmap.currentTextChanged.connect(self._update_radar_heatmap)
+        self.radar_clip_min.valueChanged.connect(self._update_radar_heatmap)
+        self.radar_clip_max.valueChanged.connect(self._update_radar_heatmap)
+        self.add_mount_btn.clicked.connect(self._add_engine_mount)
+        self.remove_mount_btn.clicked.connect(self._remove_engine_mount)
+        self.guess_mount_btn.clicked.connect(self._guess_engine_mounts)
 
         # Menu bar
         file_menu = self.menuBar().addMenu("File")
@@ -312,6 +457,9 @@ class MainWindow(QtWidgets.QMainWindow):
         templates_menu.addAction(self.create_template_btn.text(), self._create_template)
         templates_menu.addAction(self.match_template_btn.text(), self._match_templates)
 
+        reference_menu = self.menuBar().addMenu("Reference data")
+        reference_action = reference_menu.addAction("Load F-16A article-style dataset")
+
         open_action.triggered.connect(self._open_mesh)
         save_project_action.triggered.connect(self._save_project)
         load_project_action.triggered.connect(self._load_project)
@@ -319,6 +467,7 @@ class MainWindow(QtWidgets.QMainWindow):
         export_plot_action.triggered.connect(self._export_plots)
         exit_action.triggered.connect(self.close)
         edit_materials_action.triggered.connect(self._edit_materials)
+        reference_action.triggered.connect(self._load_reference_dataset)
 
     # ------------------------------------------------------------------
     def _update_band_defaults(self) -> None:
@@ -398,7 +547,88 @@ class MainWindow(QtWidgets.QMainWindow):
             elevation_step=self.el_step.value(),
             target_speed_mps=self.speed_spin.value(),
             radar_profile=radar_profile,
+            surface_roughness_db=self.roughness_spin.value(),
+            speckle_db=self.speckle_spin.value(),
+            random_seed=None if self.seed_spin.value() == 0 else self.seed_spin.value(),
+            blade_count=self.blade_spin.value(),
+            blade_rpm=self.blade_rpm.value(),
+            compressor_blades=self.compressor_blades.value(),
+            compressor_rpm=self.compressor_rpm.value(),
+            engine_mounts=self._engine_mounts_from_ui(),
         )
+
+    def _engine_mounts_from_ui(self) -> list[EngineMount]:
+        mounts: list[EngineMount] = []
+        for row in range(self.mount_table.rowCount()):
+            kind_item = self.mount_table.item(row, 0)
+            x_item = self.mount_table.item(row, 1)
+            y_item = self.mount_table.item(row, 2)
+            z_item = self.mount_table.item(row, 3)
+            if kind_item is None or x_item is None or y_item is None or z_item is None:
+                continue
+            try:
+                mounts.append(
+                    EngineMount(
+                        kind=kind_item.text(),
+                        x=float(x_item.text()),
+                        y=float(y_item.text()),
+                        z=float(z_item.text()),
+                    )
+                )
+            except ValueError:
+                continue
+        return mounts
+
+    def _insert_mount_row(self, mount: EngineMount, row: int | None = None) -> None:
+        row = self.mount_table.rowCount() if row is None else row
+        if row == self.mount_table.rowCount():
+            self.mount_table.insertRow(row)
+        values = [mount.kind, f"{mount.x:.3f}", f"{mount.y:.3f}", f"{mount.z:.3f}"]
+        for col, val in enumerate(values):
+            self.mount_table.setItem(row, col, QtWidgets.QTableWidgetItem(val))
+
+    def _load_engine_mounts(self, mounts: list[EngineMount]) -> None:
+        self.mount_table.setRowCount(0)
+        for mount in mounts:
+            self._insert_mount_row(mount)
+        if mounts:
+            self.mount_table.selectRow(0)
+        self._draw_mesh_preview()
+
+    def _add_engine_mount(self) -> None:
+        mount = EngineMount(
+            kind=self.mount_kind.currentText(),
+            x=self.mount_x.value(),
+            y=self.mount_y.value(),
+            z=self.mount_z.value(),
+        )
+        row = self.mount_table.currentRow()
+        self._insert_mount_row(mount, None if row < 0 else row)
+        self.mount_table.selectRow(row if row >= 0 else self.mount_table.rowCount() - 1)
+        self._draw_mesh_preview()
+
+    def _remove_engine_mount(self) -> None:
+        row = self.mount_table.currentRow()
+        if row < 0:
+            return
+        self.mount_table.removeRow(row)
+        self._draw_mesh_preview()
+
+    def _guess_engine_mounts(self) -> None:
+        if self.mesh is None:
+            QtWidgets.QMessageBox.warning(self, "No mesh", "Load a model to auto-place engines/props")
+            return
+        center = self.mesh.centroid
+        extents = self.mesh.extents
+        offset_x = 0.6 * extents[0] if extents[0] > 0 else 1.0
+        guesses = [
+            EngineMount("Engine", *(center + np.array([offset_x, 0.0, 0.0]))),
+            EngineMount("Engine", *(center + np.array([-offset_x, 0.0, 0.0]))),
+        ]
+        self.mount_x.setValue(center[0])
+        self.mount_y.setValue(center[1])
+        self.mount_z.setValue(center[2])
+        self._load_engine_mounts(guesses)
 
     def _run_simulation(self) -> None:
         if self.mesh is None:
@@ -423,13 +653,47 @@ class MainWindow(QtWidgets.QMainWindow):
         self.status_label.setText("Failed")
 
     def _on_simulation_finished(self, result: SimulationResult) -> None:
+        self._display_result(result, "Simulation complete")
+
+    def _display_result(self, result: SimulationResult, status: str) -> None:
         self.result = result
-        self.status_label.setText("Simulation complete")
+        if result.micro_doppler_hz is not None and len(result.micro_doppler_hz) > 0:
+            lo = float(np.min(result.micro_doppler_hz))
+            hi = float(np.max(result.micro_doppler_hz))
+            status += f" | NCTR lines {lo:.1f}–{hi:.1f} Hz ({len(result.micro_doppler_hz)} harmonics)"
+        if result.engine_mounts:
+            status += f" | {len(result.engine_mounts)} engine/prop mounts"
+        self.status_label.setText(status)
         self.progress.setValue(100)
         self._populate_frequency_selector(result.frequencies_hz)
+        self._populate_radar_freq_selector(result.frequencies_hz)
         self._update_polar_plot()
         self._update_rcs_plot()
+        self._update_radar_heatmap()
         self._draw_mesh_preview()
+
+    def _load_reference_dataset(self) -> None:
+        if not self.reference_sets:
+            QtWidgets.QMessageBox.information(self, "No reference data", "No bundled datasets available.")
+            return
+        labels = [ref.name for ref in self.reference_sets]
+        choice, ok = QtWidgets.QInputDialog.getItem(
+            self,
+            "Reference dataset",
+            "Select an article-style dataset to load",
+            labels,
+            0,
+            False,
+        )
+        if not ok or not choice:
+            return
+        ref = next(r for r in self.reference_sets if r.name == choice)
+        self._display_result(ref.result, f"Loaded reference dataset: {ref.name}")
+        QtWidgets.QMessageBox.information(
+            self,
+            ref.name,
+            f"{ref.note}\n\nSource: {ref.source}\nConfigured as {ref.result.band}-band at {ref.result.frequencies_hz[0]/1e9:.2f} GHz",
+        )
 
     # ------------------------------------------------------------------
     def _draw_mesh_preview(self) -> None:
@@ -442,6 +706,19 @@ class MainWindow(QtWidgets.QMainWindow):
         ax.add_collection3d(
             Poly3DCollection(mesh.vertices[mesh.faces], facecolor="#6baed6", edgecolor="k", alpha=0.4)
         )
+        mounts = self._engine_mounts_from_ui()
+        if mounts:
+            coords = np.array([[m.x, m.y, m.z] for m in mounts])
+            ax.scatter(coords[:, 0], coords[:, 1], coords[:, 2], color="crimson", s=35, marker="o")
+            for idx, mount in enumerate(mounts, start=1):
+                ax.text(
+                    mount.x,
+                    mount.y,
+                    mount.z,
+                    f"{mount.kind[0]}{idx}",
+                    color="crimson",
+                    fontsize=8,
+                )
         bounds = mesh.bounds
         max_range = (bounds[1] - bounds[0]).max()
         mid = (bounds[1] + bounds[0]) / 2
@@ -479,6 +756,25 @@ class MainWindow(QtWidgets.QMainWindow):
         self.freq_selector.setCurrentIndex(0)
         self.freq_selector.blockSignals(False)
 
+    def _populate_radar_freq_selector(self, freqs: np.ndarray) -> None:
+        self.radar_freq_selector.blockSignals(True)
+        self.radar_freq_selector.clear()
+        for freq in freqs:
+            self.radar_freq_selector.addItem(f"{freq/1e9:.2f} GHz")
+        self.radar_freq_selector.setEnabled(len(freqs) > 1)
+        self.radar_freq_selector.setCurrentIndex(0)
+        self.radar_freq_selector.blockSignals(False)
+
+    def _sync_radar_frequency(self, index: int) -> None:
+        if self.radar_mode.currentText() != "Selected frequency":
+            self._update_radar_heatmap()
+            return
+        if 0 <= index < self.radar_freq_selector.count():
+            self.radar_freq_selector.blockSignals(True)
+            self.radar_freq_selector.setCurrentIndex(index)
+            self.radar_freq_selector.blockSignals(False)
+        self._update_radar_heatmap()
+
     def _update_rcs_plot(self) -> None:
         if self.result is None:
             return
@@ -509,6 +805,77 @@ class MainWindow(QtWidgets.QMainWindow):
         ax.set_title(title)
         ax.set_box_aspect((1, 1, 1))
         self.rcs3d_canvas.draw_idle()
+
+    def _update_radar_heatmap(self) -> None:
+        if self.result is None:
+            return
+        self.radar_canvas.clear()
+        freqs = self.result.frequencies_hz
+        az = self.result.azimuth_deg
+        el = self.result.elevation_deg
+        vmin = self.radar_clip_min.value()
+        vmax = self.radar_clip_max.value()
+        cmap = RADAR_CMAPS.get(self.radar_cmap.currentText(), plt.cm.viridis)
+
+        def _draw(ax: plt.Axes, data: np.ndarray, title: str) -> plt.AxesImage:
+            clipped = np.clip(data, vmin, vmax)
+            im = ax.imshow(
+                clipped,
+                origin="lower",
+                extent=(float(az.min()), float(az.max()), float(el.min()), float(el.max())),
+                aspect="auto",
+                cmap=cmap,
+                vmin=vmin,
+                vmax=vmax,
+            )
+            ax.set_xlabel("Azimuth (deg)")
+            ax.set_ylabel("Elevation (deg)")
+            ax.set_title(title, fontsize=10)
+            ax.grid(color="white", alpha=0.25, linestyle="--", linewidth=0.6)
+            for ring in np.linspace(el.min(), el.max(), 5):
+                ax.axhline(ring, color="white", alpha=0.15, linewidth=0.5)
+            return im
+
+        mode = self.radar_mode.currentText()
+        if mode == "All frequencies grid" and len(freqs) > 1:
+            cols = min(3, len(freqs))
+            rows = math.ceil(len(freqs) / cols)
+            axes = self.radar_canvas.figure.subplots(rows, cols, squeeze=False)
+            im = None
+            for idx, freq in enumerate(freqs):
+                r, c = divmod(idx, cols)
+                ax = axes[r][c]
+                im = _draw(ax, self.result.rcs_dbsm[idx], f"{freq/1e9:.2f} GHz")
+            # hide unused axes
+            for unused in range(len(freqs), rows * cols):
+                r, c = divmod(unused, cols)
+                axes[r][c].axis("off")
+            if im is not None:
+                self.radar_canvas.figure.colorbar(
+                    im, ax=self.radar_canvas.figure.axes, shrink=0.65, label="RCS (dBsm)"
+                )
+        else:
+            ax = self.radar_canvas.figure.add_subplot(111)
+            if mode == "Median of sweep" and len(freqs) > 1:
+                data = np.median(self.result.rcs_dbsm, axis=0)
+                title = "Median across sweep"
+            else:
+                idx = self.radar_freq_selector.currentIndex()
+                idx = max(0, min(idx, len(freqs) - 1))
+                data = self.result.rcs_dbsm[idx]
+                title = f"{freqs[idx]/1e9:.2f} GHz"
+            im = _draw(ax, data, title)
+            self.radar_canvas.figure.colorbar(im, ax=ax, shrink=0.7, label="RCS (dBsm)")
+
+        meta = []
+        if self.result.radar_profile:
+            meta.append(self.result.radar_profile)
+        meta.append(f"{self.result.band}-band {self.result.polarization}")
+        if self.result.target_speed_mps:
+            meta.append(f"Speed {self.result.target_speed_mps:.0f} m/s")
+        meta.append(f"Az {az.min():.0f}–{az.max():.0f}°, El {el.min():.0f}–{el.max():.0f}°")
+        self.radar_canvas.figure.suptitle(" / ".join(meta), fontsize=11)
+        self.radar_canvas.draw_idle()
 
     # ------------------------------------------------------------------
     def _refresh_templates(self) -> None:
@@ -577,6 +944,14 @@ class MainWindow(QtWidgets.QMainWindow):
             if state.settings.frequency_hz:
                 self.single_freq.setValue(state.settings.frequency_hz / 1e9)
         self.speed_spin.setValue(state.settings.target_speed_mps)
+        self.roughness_spin.setValue(state.settings.surface_roughness_db)
+        self.speckle_spin.setValue(state.settings.speckle_db)
+        self.seed_spin.setValue(state.settings.random_seed or 0)
+        self.blade_spin.setValue(state.settings.blade_count)
+        self.blade_rpm.setValue(state.settings.blade_rpm)
+        self.compressor_blades.setValue(state.settings.compressor_blades)
+        self.compressor_rpm.setValue(state.settings.compressor_rpm)
+        self._load_engine_mounts(state.settings.engine_mounts)
         if state.settings.radar_profile and state.settings.radar_profile in RADAR_PROFILES:
             self.radar_combo.setCurrentText(state.settings.radar_profile)
         else:

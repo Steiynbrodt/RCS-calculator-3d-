@@ -36,6 +36,20 @@ MATERIAL_DB: dict[str, _LegacyMaterial] = {
     "Metamaterial RAM": _LegacyMaterial(sigma=1e-7, eps_r=25.0, tan_delta=0.4, reflectivity=0.01),
     "Carbon Nanotube Foam": _LegacyMaterial(sigma=1e1, eps_r=7.5, tan_delta=0.03, reflectivity=0.15),
     "Spray-on Polymer RAM": _LegacyMaterial(sigma=5e-3, eps_r=9.0, tan_delta=0.12, reflectivity=0.2),
+    "Stainless Steel": _LegacyMaterial(sigma=1.4e6, eps_r=1.0, tan_delta=0.0, reflectivity=0.92),
+    "Painted Aluminium": _LegacyMaterial(sigma=3.0e7, eps_r=2.5, tan_delta=0.01, reflectivity=0.93),
+    "Carbon Fiber Composite": _LegacyMaterial(sigma=5e3, eps_r=8.0, tan_delta=0.08, reflectivity=0.55),
+    "Glass Fiber Composite": _LegacyMaterial(sigma=1e-12, eps_r=4.5, tan_delta=0.01, reflectivity=0.25),
+    "Honeycomb Sandwich": _LegacyMaterial(sigma=1e-3, eps_r=2.0, tan_delta=0.02, reflectivity=0.35),
+    "Conductive Paint": _LegacyMaterial(sigma=8e3, eps_r=5.0, tan_delta=0.05, reflectivity=0.65),
+    "Sea Water": _LegacyMaterial(sigma=4.0, eps_r=80.0, tan_delta=0.1, reflectivity=0.65),
+    "Wet Soil": _LegacyMaterial(sigma=0.02, eps_r=20.0, tan_delta=0.12, reflectivity=0.4),
+    "Dry Soil": _LegacyMaterial(sigma=0.005, eps_r=6.0, tan_delta=0.08, reflectivity=0.35),
+    "Concrete": _LegacyMaterial(sigma=1e-3, eps_r=5.0, tan_delta=0.02, reflectivity=0.35),
+    "Glass": _LegacyMaterial(sigma=1e-13, eps_r=6.5, tan_delta=0.005, reflectivity=0.2),
+    "Ice": _LegacyMaterial(sigma=1e-6, eps_r=3.2, tan_delta=0.005, reflectivity=0.3),
+    "Wood": _LegacyMaterial(sigma=1e-8, eps_r=2.2, tan_delta=0.05, reflectivity=0.25),
+    "Fuel (JP-8)": _LegacyMaterial(sigma=5e-5, eps_r=2.1, tan_delta=0.02, reflectivity=0.15),
 }
 
 
