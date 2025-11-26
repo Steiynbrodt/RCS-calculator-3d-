@@ -388,7 +388,13 @@ class RadarGUI:
                     file_path = os.path.join(export_dir, "rcs_heatmap.png")
                 else:
                     file_path = "rcs_heatmap.png"
-                plt.imshow(self.last_rcs, extent=[0, 360, -90, 90], aspect="auto", cmap="hot", origin="lower")
+                extent = [
+                    float(self.last_az[0]),
+                    float(self.last_az[-1]),
+                    float(self.last_el[0]),
+                    float(self.last_el[-1]),
+                ]
+                plt.imshow(self.last_rcs, extent=extent, aspect="auto", cmap="hot", origin="lower")
                 plt.colorbar(label="RCS (dBsm)")
                 plt.title("RCS Heatmap")
                 plt.xlabel("Azimuth")
