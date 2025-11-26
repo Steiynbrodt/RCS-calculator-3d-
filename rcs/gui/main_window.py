@@ -15,7 +15,16 @@ from PyQt5 import QtCore, QtWidgets
 
 from ..materials import MaterialDatabase
 from ..project_io import ProjectState, load_project, save_project
-from ..rcs_engine import BAND_DEFAULTS, FrequencySweep, Material, RCSEngine, SimulationResult, SimulationSettings
+from ..radar_profiles import RADAR_PROFILES, RadarProfile
+from ..rcs_engine import (
+    BAND_DEFAULTS,
+    EngineMount,
+    FrequencySweep,
+    Material,
+    RCSEngine,
+    SimulationResult,
+    SimulationSettings,
+)
 from ..templates import TemplateLibrary
 
 
@@ -119,6 +128,10 @@ class MainWindow(QtWidgets.QMainWindow):
         rcs_tab = QtWidgets.QWidget()
         rcs_layout = QtWidgets.QVBoxLayout(rcs_tab)
         rcs_controls = QtWidgets.QHBoxLayout()
+        self.freq_selector = QtWidgets.QComboBox()
+        self.freq_selector.setEnabled(False)
+        rcs_controls.addWidget(QtWidgets.QLabel("Display freq:"))
+        rcs_controls.addWidget(self.freq_selector)
         self.clip_min = QtWidgets.QDoubleSpinBox()
         self.clip_min.setRange(-100, 100)
         self.clip_min.setValue(-40)
@@ -159,6 +172,11 @@ class MainWindow(QtWidgets.QMainWindow):
         status.addWidget(self.status_label, 1)
         self.setStatusBar(status)
 
+    def _populate_radar_presets(self) -> None:
+        self.radar_combo.clear()
+        for name in sorted(RADAR_PROFILES.keys()):
+            self.radar_combo.addItem(name)
+
     def _build_controls(self) -> QtWidgets.QWidget:
         widget = QtWidgets.QWidget()
         form = QtWidgets.QFormLayout(widget)
@@ -171,9 +189,14 @@ class MainWindow(QtWidgets.QMainWindow):
         file_layout.addWidget(self.file_btn)
         form.addRow("Model:", file_layout)
 
+        # Radar presets
+        self.radar_combo = QtWidgets.QComboBox()
+        self._populate_radar_presets()
+        form.addRow("Radar preset:", self.radar_combo)
+
         # Band
         self.band_combo = QtWidgets.QComboBox()
-        self.band_combo.addItems(["L", "S", "X"])
+        self.band_combo.addItems(["L", "S", "C", "X"])
         form.addRow("Band:", self.band_combo)
 
         # Frequency controls
@@ -237,6 +260,14 @@ class MainWindow(QtWidgets.QMainWindow):
         angle_grid.addWidget(self.el_step, 5, 1)
         form.addRow("Angles:", angle_grid)
 
+        # Platform speed
+        self.speed_spin = QtWidgets.QDoubleSpinBox()
+        self.speed_spin.setRange(0, 1500)
+        self.speed_spin.setSuffix(" m/s")
+        self.speed_spin.setSingleStep(10)
+        self.speed_spin.setValue(250)
+        form.addRow("Aircraft speed:", self.speed_spin)
+
         # Polarization / reflections
         self.pol_combo = QtWidgets.QComboBox()
         self.pol_combo.addItems(["H", "V"])
@@ -245,6 +276,89 @@ class MainWindow(QtWidgets.QMainWindow):
         self.reflections_spin.setRange(1, 10)
         self.reflections_spin.setValue(3)
         form.addRow("Max reflections:", self.reflections_spin)
+
+        # Surface roughness / randomness
+        self.roughness_spin = QtWidgets.QDoubleSpinBox()
+        self.roughness_spin.setRange(0.0, 20.0)
+        self.roughness_spin.setSingleStep(0.5)
+        self.roughness_spin.setDecimals(2)
+        self.roughness_spin.setValue(0.0)
+        form.addRow("Surface roughness (dB σ):", self.roughness_spin)
+        self.speckle_spin = QtWidgets.QDoubleSpinBox()
+        self.speckle_spin.setRange(0.0, 20.0)
+        self.speckle_spin.setSingleStep(0.5)
+        self.speckle_spin.setDecimals(2)
+        self.speckle_spin.setValue(3.0)
+        form.addRow("Speckle grain (dB σ):", self.speckle_spin)
+        self.seed_spin = QtWidgets.QSpinBox()
+        self.seed_spin.setRange(0, 1_000_000)
+        self.seed_spin.setValue(0)
+        self.seed_spin.setSpecialValueText("Auto")
+        form.addRow("Noise seed (optional):", self.seed_spin)
+
+        # NCTR rotor cues
+        rotor_layout = QtWidgets.QGridLayout()
+        self.blade_spin = QtWidgets.QSpinBox()
+        self.blade_spin.setRange(0, 12)
+        self.blade_spin.setValue(0)
+        self.blade_rpm = QtWidgets.QDoubleSpinBox()
+        self.blade_rpm.setRange(0.0, 12000.0)
+        self.blade_rpm.setSingleStep(50.0)
+        rotor_layout.addWidget(QtWidgets.QLabel("Blades"), 0, 0)
+        rotor_layout.addWidget(self.blade_spin, 0, 1)
+        rotor_layout.addWidget(QtWidgets.QLabel("RPM"), 1, 0)
+        rotor_layout.addWidget(self.blade_rpm, 1, 1)
+        form.addRow("NCTR rotor/hub:", rotor_layout)
+
+        compressor_layout = QtWidgets.QGridLayout()
+        self.compressor_blades = QtWidgets.QSpinBox()
+        self.compressor_blades.setRange(0, 60)
+        self.compressor_blades.setValue(0)
+        self.compressor_rpm = QtWidgets.QDoubleSpinBox()
+        self.compressor_rpm.setRange(0.0, 30000.0)
+        self.compressor_rpm.setSingleStep(100.0)
+        compressor_layout.addWidget(QtWidgets.QLabel("Blades"), 0, 0)
+        compressor_layout.addWidget(self.compressor_blades, 0, 1)
+        compressor_layout.addWidget(QtWidgets.QLabel("RPM"), 1, 0)
+        compressor_layout.addWidget(self.compressor_rpm, 1, 1)
+        form.addRow("NCTR compressor:", compressor_layout)
+
+        # Engine / prop locations
+        mount_box = QtWidgets.QGroupBox("Engine / prop placement")
+        mount_layout = QtWidgets.QVBoxLayout(mount_box)
+        mount_controls = QtWidgets.QGridLayout()
+        self.mount_kind = QtWidgets.QComboBox()
+        self.mount_kind.addItems(["Engine", "Propeller"])
+        self.mount_x = QtWidgets.QDoubleSpinBox()
+        self.mount_y = QtWidgets.QDoubleSpinBox()
+        self.mount_z = QtWidgets.QDoubleSpinBox()
+        for spin in (self.mount_x, self.mount_y, self.mount_z):
+            spin.setRange(-10_000.0, 10_000.0)
+            spin.setDecimals(3)
+            spin.setSingleStep(0.1)
+        self.mount_x.setSuffix(" m")
+        self.mount_y.setSuffix(" m")
+        self.mount_z.setSuffix(" m")
+        self.add_mount_btn = QtWidgets.QPushButton("Add / update")
+        self.remove_mount_btn = QtWidgets.QPushButton("Remove selected")
+        self.guess_mount_btn = QtWidgets.QPushButton("Auto-place pair")
+        mount_controls.addWidget(QtWidgets.QLabel("Type"), 0, 0)
+        mount_controls.addWidget(self.mount_kind, 0, 1)
+        mount_controls.addWidget(QtWidgets.QLabel("X"), 1, 0)
+        mount_controls.addWidget(self.mount_x, 1, 1)
+        mount_controls.addWidget(QtWidgets.QLabel("Y"), 2, 0)
+        mount_controls.addWidget(self.mount_y, 2, 1)
+        mount_controls.addWidget(QtWidgets.QLabel("Z"), 3, 0)
+        mount_controls.addWidget(self.mount_z, 3, 1)
+        mount_controls.addWidget(self.add_mount_btn, 4, 0)
+        mount_controls.addWidget(self.remove_mount_btn, 4, 1)
+        mount_controls.addWidget(self.guess_mount_btn, 5, 0, 1, 2)
+        mount_layout.addLayout(mount_controls)
+        self.mount_table = QtWidgets.QTableWidget(0, 4)
+        self.mount_table.setHorizontalHeaderLabels(["Type", "X", "Y", "Z"])
+        self.mount_table.horizontalHeader().setStretchLastSection(True)
+        mount_layout.addWidget(self.mount_table)
+        form.addRow("Engines/props:", mount_box)
 
         # Material selection
         self.material_combo = QtWidgets.QComboBox()
@@ -261,6 +375,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def _connect_actions(self) -> None:
         self.file_btn.clicked.connect(self._open_mesh)
         self.band_combo.currentTextChanged.connect(self._update_band_defaults)
+        self.radar_combo.currentTextChanged.connect(self._on_radar_profile_changed)
         self.run_btn.clicked.connect(self._run_simulation)
         self.stop_btn.clicked.connect(self._stop_simulation)
         self.create_template_btn.clicked.connect(self._create_template)
@@ -270,6 +385,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self.scale_mode.currentTextChanged.connect(self._update_polar_plot)
         self.clip_min.valueChanged.connect(self._update_rcs_plot)
         self.clip_max.valueChanged.connect(self._update_rcs_plot)
+        self.freq_selector.currentIndexChanged.connect(self._update_rcs_plot)
+        self.add_mount_btn.clicked.connect(self._add_engine_mount)
+        self.remove_mount_btn.clicked.connect(self._remove_engine_mount)
+        self.guess_mount_btn.clicked.connect(self._guess_engine_mounts)
 
         # Menu bar
         file_menu = self.menuBar().addMenu("File")
@@ -303,6 +422,32 @@ class MainWindow(QtWidgets.QMainWindow):
         self.sweep_start.setValue(start / 1e9)
         self.sweep_stop.setValue(stop / 1e9)
 
+    def _on_radar_profile_changed(self, name: str) -> None:
+        profile: RadarProfile | None = RADAR_PROFILES.get(name)
+        if profile is None or name.startswith("Custom"):
+            return
+
+        self.band_combo.setCurrentText(profile.band)
+        preferred_pol = profile.polarization.split("/")[0] if profile.polarization else ""
+        if preferred_pol:
+            idx = self.pol_combo.findText(preferred_pol)
+            if idx >= 0:
+                self.pol_combo.setCurrentIndex(idx)
+        if profile.max_reflections:
+            self.reflections_spin.setValue(profile.max_reflections)
+        if profile.default_speed_mps is not None:
+            self.speed_spin.setValue(profile.default_speed_mps)
+
+        if profile.sweep_start_ghz and profile.sweep_stop_ghz:
+            self.freq_mode.setCurrentText("Sweep")
+            self.sweep_start.setValue(profile.sweep_start_ghz)
+            self.sweep_stop.setValue(profile.sweep_stop_ghz)
+            if profile.sweep_steps:
+                self.sweep_steps.setValue(profile.sweep_steps)
+        elif profile.frequency_ghz:
+            self.freq_mode.setCurrentText("Single")
+            self.single_freq.setValue(profile.frequency_ghz)
+
     def _open_mesh(self) -> None:
         path, _ = QtWidgets.QFileDialog.getOpenFileName(self, "Open STL", str(Path.home()), "Mesh (*.stl *.obj *.glb *.gltf)")
         if not path:
@@ -330,6 +475,9 @@ class MainWindow(QtWidgets.QMainWindow):
                 steps=self.sweep_steps.value(),
             )
         freq = None if sweep else self.single_freq.value() * 1e9
+        radar_profile = self.radar_combo.currentText()
+        if radar_profile.startswith("Custom"):
+            radar_profile = None
         return SimulationSettings(
             band=self.band_combo.currentText(),
             polarization=self.pol_combo.currentText(),
@@ -342,7 +490,90 @@ class MainWindow(QtWidgets.QMainWindow):
             elevation_start=self.el_start.value(),
             elevation_stop=self.el_stop.value(),
             elevation_step=self.el_step.value(),
+            target_speed_mps=self.speed_spin.value(),
+            radar_profile=radar_profile,
+            surface_roughness_db=self.roughness_spin.value(),
+            speckle_db=self.speckle_spin.value(),
+            random_seed=None if self.seed_spin.value() == 0 else self.seed_spin.value(),
+            blade_count=self.blade_spin.value(),
+            blade_rpm=self.blade_rpm.value(),
+            compressor_blades=self.compressor_blades.value(),
+            compressor_rpm=self.compressor_rpm.value(),
+            engine_mounts=self._engine_mounts_from_ui(),
         )
+
+    def _engine_mounts_from_ui(self) -> list[EngineMount]:
+        mounts: list[EngineMount] = []
+        for row in range(self.mount_table.rowCount()):
+            kind_item = self.mount_table.item(row, 0)
+            x_item = self.mount_table.item(row, 1)
+            y_item = self.mount_table.item(row, 2)
+            z_item = self.mount_table.item(row, 3)
+            if kind_item is None or x_item is None or y_item is None or z_item is None:
+                continue
+            try:
+                mounts.append(
+                    EngineMount(
+                        kind=kind_item.text(),
+                        x=float(x_item.text()),
+                        y=float(y_item.text()),
+                        z=float(z_item.text()),
+                    )
+                )
+            except ValueError:
+                continue
+        return mounts
+
+    def _insert_mount_row(self, mount: EngineMount, row: int | None = None) -> None:
+        row = self.mount_table.rowCount() if row is None else row
+        if row == self.mount_table.rowCount():
+            self.mount_table.insertRow(row)
+        values = [mount.kind, f"{mount.x:.3f}", f"{mount.y:.3f}", f"{mount.z:.3f}"]
+        for col, val in enumerate(values):
+            self.mount_table.setItem(row, col, QtWidgets.QTableWidgetItem(val))
+
+    def _load_engine_mounts(self, mounts: list[EngineMount]) -> None:
+        self.mount_table.setRowCount(0)
+        for mount in mounts:
+            self._insert_mount_row(mount)
+        if mounts:
+            self.mount_table.selectRow(0)
+        self._draw_mesh_preview()
+
+    def _add_engine_mount(self) -> None:
+        mount = EngineMount(
+            kind=self.mount_kind.currentText(),
+            x=self.mount_x.value(),
+            y=self.mount_y.value(),
+            z=self.mount_z.value(),
+        )
+        row = self.mount_table.currentRow()
+        self._insert_mount_row(mount, None if row < 0 else row)
+        self.mount_table.selectRow(row if row >= 0 else self.mount_table.rowCount() - 1)
+        self._draw_mesh_preview()
+
+    def _remove_engine_mount(self) -> None:
+        row = self.mount_table.currentRow()
+        if row < 0:
+            return
+        self.mount_table.removeRow(row)
+        self._draw_mesh_preview()
+
+    def _guess_engine_mounts(self) -> None:
+        if self.mesh is None:
+            QtWidgets.QMessageBox.warning(self, "No mesh", "Load a model to auto-place engines/props")
+            return
+        center = self.mesh.centroid
+        extents = self.mesh.extents
+        offset_x = 0.6 * extents[0] if extents[0] > 0 else 1.0
+        guesses = [
+            EngineMount("Engine", *(center + np.array([offset_x, 0.0, 0.0]))),
+            EngineMount("Engine", *(center + np.array([-offset_x, 0.0, 0.0]))),
+        ]
+        self.mount_x.setValue(center[0])
+        self.mount_y.setValue(center[1])
+        self.mount_z.setValue(center[2])
+        self._load_engine_mounts(guesses)
 
     def _run_simulation(self) -> None:
         if self.mesh is None:
@@ -368,8 +599,16 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _on_simulation_finished(self, result: SimulationResult) -> None:
         self.result = result
-        self.status_label.setText("Simulation complete")
+        status = "Simulation complete"
+        if result.micro_doppler_hz is not None and len(result.micro_doppler_hz) > 0:
+            lo = float(np.min(result.micro_doppler_hz))
+            hi = float(np.max(result.micro_doppler_hz))
+            status += f" | NCTR lines {lo:.1f}–{hi:.1f} Hz ({len(result.micro_doppler_hz)} harmonics)"
+        if result.engine_mounts:
+            status += f" | {len(result.engine_mounts)} engine/prop mounts"
+        self.status_label.setText(status)
         self.progress.setValue(100)
+        self._populate_frequency_selector(result.frequencies_hz)
         self._update_polar_plot()
         self._update_rcs_plot()
         self._draw_mesh_preview()
@@ -385,6 +624,19 @@ class MainWindow(QtWidgets.QMainWindow):
         ax.add_collection3d(
             Poly3DCollection(mesh.vertices[mesh.faces], facecolor="#6baed6", edgecolor="k", alpha=0.4)
         )
+        mounts = self._engine_mounts_from_ui()
+        if mounts:
+            coords = np.array([[m.x, m.y, m.z] for m in mounts])
+            ax.scatter(coords[:, 0], coords[:, 1], coords[:, 2], color="crimson", s=35, marker="o")
+            for idx, mount in enumerate(mounts, start=1):
+                ax.text(
+                    mount.x,
+                    mount.y,
+                    mount.z,
+                    f"{mount.kind[0]}{idx}",
+                    color="crimson",
+                    fontsize=8,
+                )
         bounds = mesh.bounds
         max_range = (bounds[1] - bounds[0]).max()
         mid = (bounds[1] + bounds[0]) / 2
@@ -413,12 +665,22 @@ class MainWindow(QtWidgets.QMainWindow):
         ax.set_title(f"Polar plot ({self.result.band}-band, {self.result.polarization})")
         self.polar_canvas.draw_idle()
 
+    def _populate_frequency_selector(self, freqs: np.ndarray) -> None:
+        self.freq_selector.blockSignals(True)
+        self.freq_selector.clear()
+        for freq in freqs:
+            self.freq_selector.addItem(f"{freq/1e9:.2f} GHz")
+        self.freq_selector.setEnabled(len(freqs) > 1)
+        self.freq_selector.setCurrentIndex(0)
+        self.freq_selector.blockSignals(False)
+
     def _update_rcs_plot(self) -> None:
         if self.result is None:
             return
         self.rcs3d_canvas.clear()
         ax = self.rcs3d_canvas.figure.add_subplot(111, projection="3d")
-        freq_idx = 0
+        freq_idx = self.freq_selector.currentIndex()
+        freq_idx = max(0, min(freq_idx, len(self.result.frequencies_hz) - 1))
         rcs = self.result.rcs_dbsm[freq_idx]
         rcs = np.clip(rcs, self.clip_min.value(), self.clip_max.value())
         az_rad = np.radians(self.result.azimuth_deg)
@@ -434,7 +696,12 @@ class MainWindow(QtWidgets.QMainWindow):
         mappable = plt.cm.ScalarMappable(cmap=plt.cm.viridis)
         mappable.set_array(rcs)
         self.rcs3d_canvas.figure.colorbar(mappable, ax=ax, shrink=0.5, aspect=10, label="RCS (dBsm)")
-        ax.set_title(f"3D RCS at {self.result.frequencies_hz[freq_idx]/1e9:.2f} GHz")
+        title = f"3D RCS at {self.result.frequencies_hz[freq_idx]/1e9:.2f} GHz"
+        if self.result.radar_profile:
+            title += f" – {self.result.radar_profile}"
+        if self.result.target_speed_mps:
+            title += f" @ {self.result.target_speed_mps:.0f} m/s"
+        ax.set_title(title)
         ax.set_box_aspect((1, 1, 1))
         self.rcs3d_canvas.draw_idle()
 
@@ -504,6 +771,19 @@ class MainWindow(QtWidgets.QMainWindow):
             self.freq_mode.setCurrentText("Single")
             if state.settings.frequency_hz:
                 self.single_freq.setValue(state.settings.frequency_hz / 1e9)
+        self.speed_spin.setValue(state.settings.target_speed_mps)
+        self.roughness_spin.setValue(state.settings.surface_roughness_db)
+        self.speckle_spin.setValue(state.settings.speckle_db)
+        self.seed_spin.setValue(state.settings.random_seed or 0)
+        self.blade_spin.setValue(state.settings.blade_count)
+        self.blade_rpm.setValue(state.settings.blade_rpm)
+        self.compressor_blades.setValue(state.settings.compressor_blades)
+        self.compressor_rpm.setValue(state.settings.compressor_rpm)
+        self._load_engine_mounts(state.settings.engine_mounts)
+        if state.settings.radar_profile and state.settings.radar_profile in RADAR_PROFILES:
+            self.radar_combo.setCurrentText(state.settings.radar_profile)
+        else:
+            self.radar_combo.setCurrentText("Custom (manual)")
         self.az_start.setValue(state.settings.azimuth_start)
         self.az_stop.setValue(state.settings.azimuth_stop)
         self.az_step.setValue(state.settings.azimuth_step)
