@@ -15,6 +15,7 @@ from PyQt5 import QtCore, QtWidgets
 
 from ..materials import MaterialDatabase
 from ..project_io import ProjectState, load_project, save_project
+from ..radar_profiles import RADAR_PROFILES, RadarProfile
 from ..rcs_engine import BAND_DEFAULTS, FrequencySweep, Material, RCSEngine, SimulationResult, SimulationSettings
 from ..templates import TemplateLibrary
 
@@ -119,6 +120,10 @@ class MainWindow(QtWidgets.QMainWindow):
         rcs_tab = QtWidgets.QWidget()
         rcs_layout = QtWidgets.QVBoxLayout(rcs_tab)
         rcs_controls = QtWidgets.QHBoxLayout()
+        self.freq_selector = QtWidgets.QComboBox()
+        self.freq_selector.setEnabled(False)
+        rcs_controls.addWidget(QtWidgets.QLabel("Display freq:"))
+        rcs_controls.addWidget(self.freq_selector)
         self.clip_min = QtWidgets.QDoubleSpinBox()
         self.clip_min.setRange(-100, 100)
         self.clip_min.setValue(-40)
@@ -159,6 +164,11 @@ class MainWindow(QtWidgets.QMainWindow):
         status.addWidget(self.status_label, 1)
         self.setStatusBar(status)
 
+    def _populate_radar_presets(self) -> None:
+        self.radar_combo.clear()
+        for name in sorted(RADAR_PROFILES.keys()):
+            self.radar_combo.addItem(name)
+
     def _build_controls(self) -> QtWidgets.QWidget:
         widget = QtWidgets.QWidget()
         form = QtWidgets.QFormLayout(widget)
@@ -171,9 +181,14 @@ class MainWindow(QtWidgets.QMainWindow):
         file_layout.addWidget(self.file_btn)
         form.addRow("Model:", file_layout)
 
+        # Radar presets
+        self.radar_combo = QtWidgets.QComboBox()
+        self._populate_radar_presets()
+        form.addRow("Radar preset:", self.radar_combo)
+
         # Band
         self.band_combo = QtWidgets.QComboBox()
-        self.band_combo.addItems(["L", "S", "X"])
+        self.band_combo.addItems(["L", "S", "C", "X"])
         form.addRow("Band:", self.band_combo)
 
         # Frequency controls
@@ -237,6 +252,14 @@ class MainWindow(QtWidgets.QMainWindow):
         angle_grid.addWidget(self.el_step, 5, 1)
         form.addRow("Angles:", angle_grid)
 
+        # Platform speed
+        self.speed_spin = QtWidgets.QDoubleSpinBox()
+        self.speed_spin.setRange(0, 1500)
+        self.speed_spin.setSuffix(" m/s")
+        self.speed_spin.setSingleStep(10)
+        self.speed_spin.setValue(250)
+        form.addRow("Aircraft speed:", self.speed_spin)
+
         # Polarization / reflections
         self.pol_combo = QtWidgets.QComboBox()
         self.pol_combo.addItems(["H", "V"])
@@ -261,6 +284,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def _connect_actions(self) -> None:
         self.file_btn.clicked.connect(self._open_mesh)
         self.band_combo.currentTextChanged.connect(self._update_band_defaults)
+        self.radar_combo.currentTextChanged.connect(self._on_radar_profile_changed)
         self.run_btn.clicked.connect(self._run_simulation)
         self.stop_btn.clicked.connect(self._stop_simulation)
         self.create_template_btn.clicked.connect(self._create_template)
@@ -270,6 +294,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.scale_mode.currentTextChanged.connect(self._update_polar_plot)
         self.clip_min.valueChanged.connect(self._update_rcs_plot)
         self.clip_max.valueChanged.connect(self._update_rcs_plot)
+        self.freq_selector.currentIndexChanged.connect(self._update_rcs_plot)
 
         # Menu bar
         file_menu = self.menuBar().addMenu("File")
@@ -303,6 +328,32 @@ class MainWindow(QtWidgets.QMainWindow):
         self.sweep_start.setValue(start / 1e9)
         self.sweep_stop.setValue(stop / 1e9)
 
+    def _on_radar_profile_changed(self, name: str) -> None:
+        profile: RadarProfile | None = RADAR_PROFILES.get(name)
+        if profile is None or name.startswith("Custom"):
+            return
+
+        self.band_combo.setCurrentText(profile.band)
+        preferred_pol = profile.polarization.split("/")[0] if profile.polarization else ""
+        if preferred_pol:
+            idx = self.pol_combo.findText(preferred_pol)
+            if idx >= 0:
+                self.pol_combo.setCurrentIndex(idx)
+        if profile.max_reflections:
+            self.reflections_spin.setValue(profile.max_reflections)
+        if profile.default_speed_mps is not None:
+            self.speed_spin.setValue(profile.default_speed_mps)
+
+        if profile.sweep_start_ghz and profile.sweep_stop_ghz:
+            self.freq_mode.setCurrentText("Sweep")
+            self.sweep_start.setValue(profile.sweep_start_ghz)
+            self.sweep_stop.setValue(profile.sweep_stop_ghz)
+            if profile.sweep_steps:
+                self.sweep_steps.setValue(profile.sweep_steps)
+        elif profile.frequency_ghz:
+            self.freq_mode.setCurrentText("Single")
+            self.single_freq.setValue(profile.frequency_ghz)
+
     def _open_mesh(self) -> None:
         path, _ = QtWidgets.QFileDialog.getOpenFileName(self, "Open STL", str(Path.home()), "Mesh (*.stl *.obj *.glb *.gltf)")
         if not path:
@@ -330,6 +381,9 @@ class MainWindow(QtWidgets.QMainWindow):
                 steps=self.sweep_steps.value(),
             )
         freq = None if sweep else self.single_freq.value() * 1e9
+        radar_profile = self.radar_combo.currentText()
+        if radar_profile.startswith("Custom"):
+            radar_profile = None
         return SimulationSettings(
             band=self.band_combo.currentText(),
             polarization=self.pol_combo.currentText(),
@@ -342,6 +396,8 @@ class MainWindow(QtWidgets.QMainWindow):
             elevation_start=self.el_start.value(),
             elevation_stop=self.el_stop.value(),
             elevation_step=self.el_step.value(),
+            target_speed_mps=self.speed_spin.value(),
+            radar_profile=radar_profile,
         )
 
     def _run_simulation(self) -> None:
@@ -370,6 +426,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.result = result
         self.status_label.setText("Simulation complete")
         self.progress.setValue(100)
+        self._populate_frequency_selector(result.frequencies_hz)
         self._update_polar_plot()
         self._update_rcs_plot()
         self._draw_mesh_preview()
@@ -413,12 +470,22 @@ class MainWindow(QtWidgets.QMainWindow):
         ax.set_title(f"Polar plot ({self.result.band}-band, {self.result.polarization})")
         self.polar_canvas.draw_idle()
 
+    def _populate_frequency_selector(self, freqs: np.ndarray) -> None:
+        self.freq_selector.blockSignals(True)
+        self.freq_selector.clear()
+        for freq in freqs:
+            self.freq_selector.addItem(f"{freq/1e9:.2f} GHz")
+        self.freq_selector.setEnabled(len(freqs) > 1)
+        self.freq_selector.setCurrentIndex(0)
+        self.freq_selector.blockSignals(False)
+
     def _update_rcs_plot(self) -> None:
         if self.result is None:
             return
         self.rcs3d_canvas.clear()
         ax = self.rcs3d_canvas.figure.add_subplot(111, projection="3d")
-        freq_idx = 0
+        freq_idx = self.freq_selector.currentIndex()
+        freq_idx = max(0, min(freq_idx, len(self.result.frequencies_hz) - 1))
         rcs = self.result.rcs_dbsm[freq_idx]
         rcs = np.clip(rcs, self.clip_min.value(), self.clip_max.value())
         az_rad = np.radians(self.result.azimuth_deg)
@@ -434,7 +501,12 @@ class MainWindow(QtWidgets.QMainWindow):
         mappable = plt.cm.ScalarMappable(cmap=plt.cm.viridis)
         mappable.set_array(rcs)
         self.rcs3d_canvas.figure.colorbar(mappable, ax=ax, shrink=0.5, aspect=10, label="RCS (dBsm)")
-        ax.set_title(f"3D RCS at {self.result.frequencies_hz[freq_idx]/1e9:.2f} GHz")
+        title = f"3D RCS at {self.result.frequencies_hz[freq_idx]/1e9:.2f} GHz"
+        if self.result.radar_profile:
+            title += f" – {self.result.radar_profile}"
+        if self.result.target_speed_mps:
+            title += f" @ {self.result.target_speed_mps:.0f} m/s"
+        ax.set_title(title)
         ax.set_box_aspect((1, 1, 1))
         self.rcs3d_canvas.draw_idle()
 
@@ -504,6 +576,11 @@ class MainWindow(QtWidgets.QMainWindow):
             self.freq_mode.setCurrentText("Single")
             if state.settings.frequency_hz:
                 self.single_freq.setValue(state.settings.frequency_hz / 1e9)
+        self.speed_spin.setValue(state.settings.target_speed_mps)
+        if state.settings.radar_profile and state.settings.radar_profile in RADAR_PROFILES:
+            self.radar_combo.setCurrentText(state.settings.radar_profile)
+        else:
+            self.radar_combo.setCurrentText("Custom (manual)")
         self.az_start.setValue(state.settings.azimuth_start)
         self.az_stop.setValue(state.settings.azimuth_stop)
         self.az_step.setValue(state.settings.azimuth_step)

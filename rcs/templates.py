@@ -86,6 +86,9 @@ class TemplateLibrary:
         target_class: str,
         meta: dict | None = None,
     ) -> SignatureTemplate:
+        meta = meta or {}
+        meta.setdefault("radar_profile", result.radar_profile)
+        meta.setdefault("target_speed_mps", result.target_speed_mps)
         return SignatureTemplate(
             name=name,
             target_class=target_class,
@@ -95,7 +98,7 @@ class TemplateLibrary:
             elevation_deg=result.elevation_deg.tolist(),
             polarization=result.polarization,
             rcs_dbsm=result.rcs_dbsm.tolist(),
-            meta=meta or {},
+            meta=meta,
         )
 
     def match(self, result: SimulationResult) -> list[tuple[SignatureTemplate, float]]:

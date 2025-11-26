@@ -15,6 +15,7 @@ from .physics import MIN_ENERGY, build_ray_intersector
 BAND_DEFAULTS = {
     "L": (1.0e9, 2.0e9),
     "S": (2.0e9, 4.0e9),
+    "C": (4.0e9, 8.0e9),
     "X": (8.0e9, 12.0e9),
 }
 
@@ -48,6 +49,8 @@ class SimulationSettings:
     elevation_step: float = 5.0
     elevation_slice_deg: float | None = None
     azimuth_slice_deg: float | None = None
+    target_speed_mps: float = 0.0
+    radar_profile: str | None = None
 
     def frequencies(self) -> np.ndarray:
         if self.frequency_hz is not None:
@@ -88,6 +91,9 @@ class SimulationResult:
     azimuth_deg: np.ndarray
     elevation_deg: np.ndarray
     rcs_dbsm: np.ndarray  # shape (f, el, az)
+    target_speed_mps: float
+    radar_profile: str | None = None
+    doppler_hz: np.ndarray | None = None
 
     def slice_for_elevation(self, elevation: float) -> tuple[np.ndarray, np.ndarray]:
         idx = int(np.argmin(np.abs(self.elevation_deg - elevation)))
@@ -129,11 +135,14 @@ class RCSEngine:
         directions = dirs.reshape(-1, 3)
 
         rcs_all = np.zeros((len(freqs), len(el), len(az)), dtype=float)
+        doppler_all = np.zeros(len(freqs), dtype=float) if settings.target_speed_mps else None
 
         for fi, freq_hz in enumerate(freqs):
             if self._stop_requested:
                 break
             freq_ghz = freq_hz / 1e9
+            if doppler_all is not None:
+                doppler_all[fi] = 2 * settings.target_speed_mps * freq_hz / 3e8
             loss_per_reflection = frequency_loss(freq_ghz)
             rcs_lin = np.zeros(len(directions), dtype=float)
 
@@ -181,6 +190,9 @@ class RCSEngine:
             azimuth_deg=az,
             elevation_deg=el,
             rcs_dbsm=rcs_all,
+            target_speed_mps=settings.target_speed_mps,
+            radar_profile=settings.radar_profile,
+            doppler_hz=doppler_all,
         )
 
 
