@@ -8,6 +8,7 @@ from typing import Iterable, Sequence
 import numpy as np
 import trimesh
 
+from .facet_po import facet_rcs
 from .math_utils import direction_grid, frequency_loss
 from .physics import MIN_ENERGY, build_ray_intersector
 
@@ -39,6 +40,7 @@ class SimulationSettings:
     band: str
     polarization: str
     max_reflections: int
+    method: str = "ray"  # "ray" | "facet_po"
     frequency_hz: float | None = None
     sweep: FrequencySweep | None = None
     azimuth_start: float = 0.0
@@ -144,38 +146,40 @@ class RCSEngine:
             if doppler_all is not None:
                 doppler_all[fi] = 2 * settings.target_speed_mps * freq_hz / 3e8
             loss_per_reflection = frequency_loss(freq_ghz)
-            rcs_lin = np.zeros(len(directions), dtype=float)
-
-            for idx, (origin, direction) in enumerate(zip(origins, directions)):
-                if self._stop_requested:
-                    break
-                energy = 1.0
-                contribution = 0.0
-                ray_origin = origin
-                ray_dir = direction
-                for _ in range(settings.max_reflections):
-                    locs, _, tri_idx = mesh.ray.intersects_location(
-                        np.array([ray_origin]), np.array([ray_dir]), multiple_hits=False
-                    )
-                    if len(locs) == 0:
+            if settings.method == "facet_po":
+                rcs_lin = facet_rcs(mesh, material.reflectivity, freq_hz, directions)
+            else:
+                rcs_lin = np.zeros(len(directions), dtype=float)
+                for idx, (origin, direction) in enumerate(zip(origins, directions)):
+                    if self._stop_requested:
                         break
-                    hit = locs[0]
-                    face_index = tri_idx[0]
-                    normal = mesh.face_normals[face_index]
-                    reflect_dir = ray_dir - 2 * np.dot(ray_dir, normal) * normal
-                    reflect_dir /= np.linalg.norm(reflect_dir)
+                    energy = 1.0
+                    contribution = 0.0
+                    ray_origin = origin
+                    ray_dir = direction
+                    for _ in range(settings.max_reflections):
+                        locs, _, tri_idx = mesh.ray.intersects_location(
+                            np.array([ray_origin]), np.array([ray_dir]), multiple_hits=False
+                        )
+                        if len(locs) == 0:
+                            break
+                        hit = locs[0]
+                        face_index = tri_idx[0]
+                        normal = mesh.face_normals[face_index]
+                        reflect_dir = ray_dir - 2 * np.dot(ray_dir, normal) * normal
+                        reflect_dir /= np.linalg.norm(reflect_dir)
 
-                    alignment = np.dot(reflect_dir, -ray_dir)
-                    if alignment > 0.95:
-                        contribution += energy * mesh.area_faces[face_index] * (np.dot(normal, -ray_dir)) ** 2
+                        alignment = np.dot(reflect_dir, -ray_dir)
+                        if alignment > 0.95:
+                            contribution += energy * mesh.area_faces[face_index] * (np.dot(normal, -ray_dir)) ** 2
 
-                    energy *= material.reflectivity * loss_per_reflection
-                    if energy < MIN_ENERGY:
-                        break
+                        energy *= material.reflectivity * loss_per_reflection
+                        if energy < MIN_ENERGY:
+                            break
 
-                    ray_origin = hit + 1e-4 * reflect_dir
-                    ray_dir = reflect_dir
-                rcs_lin[idx] = max(contribution, 1e-10)
+                        ray_origin = hit + 1e-4 * reflect_dir
+                        ray_dir = reflect_dir
+                    rcs_lin[idx] = max(contribution, 1e-10)
 
             rcs_db = 10 * np.log10(rcs_lin.reshape(len(el), len(az)))
             rcs_all[fi] = rcs_db

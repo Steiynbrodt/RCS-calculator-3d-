@@ -139,6 +139,32 @@ class MainWindow(QtWidgets.QMainWindow):
         rcs_layout.addWidget(self.rcs3d_canvas)
         self.tabs.addTab(rcs_tab, "3D RCS")
 
+        # Heatmap tab
+        self.heatmap_canvas = PlotCanvas()
+        heatmap_tab = QtWidgets.QWidget()
+        heatmap_layout = QtWidgets.QVBoxLayout(heatmap_tab)
+        heat_controls = QtWidgets.QHBoxLayout()
+        self.heatmap_freq_selector = QtWidgets.QComboBox()
+        self.heatmap_freq_selector.setEnabled(False)
+        heat_controls.addWidget(QtWidgets.QLabel("Display freq:"))
+        heat_controls.addWidget(self.heatmap_freq_selector)
+        self.heat_clip_min = QtWidgets.QDoubleSpinBox()
+        self.heat_clip_min.setRange(-120, 120)
+        self.heat_clip_min.setValue(-60)
+        self.heat_clip_min.setSingleStep(1)
+        self.heat_clip_max = QtWidgets.QDoubleSpinBox()
+        self.heat_clip_max.setRange(-120, 120)
+        self.heat_clip_max.setValue(40)
+        self.heat_clip_max.setSingleStep(1)
+        heat_controls.addWidget(QtWidgets.QLabel("Clip min (dB):"))
+        heat_controls.addWidget(self.heat_clip_min)
+        heat_controls.addWidget(QtWidgets.QLabel("Clip max (dB):"))
+        heat_controls.addWidget(self.heat_clip_max)
+        heat_controls.addStretch(1)
+        heatmap_layout.addLayout(heat_controls)
+        heatmap_layout.addWidget(self.heatmap_canvas)
+        self.tabs.addTab(heatmap_tab, "Heatmap")
+
         # Templates tab
         self.templates_table = QtWidgets.QTableWidget(0, 4)
         self.templates_table.setHorizontalHeaderLabels(["Name", "Class", "Band", "Score"])
@@ -295,6 +321,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.clip_min.valueChanged.connect(self._update_rcs_plot)
         self.clip_max.valueChanged.connect(self._update_rcs_plot)
         self.freq_selector.currentIndexChanged.connect(self._update_rcs_plot)
+        self.heat_clip_min.valueChanged.connect(self._update_heatmap_plot)
+        self.heat_clip_max.valueChanged.connect(self._update_heatmap_plot)
+        self.heatmap_freq_selector.currentIndexChanged.connect(self._update_heatmap_plot)
 
         # Menu bar
         file_menu = self.menuBar().addMenu("File")
@@ -429,6 +458,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._populate_frequency_selector(result.frequencies_hz)
         self._update_polar_plot()
         self._update_rcs_plot()
+        self._update_heatmap_plot()
         self._draw_mesh_preview()
 
     # ------------------------------------------------------------------
@@ -479,6 +509,14 @@ class MainWindow(QtWidgets.QMainWindow):
         self.freq_selector.setCurrentIndex(0)
         self.freq_selector.blockSignals(False)
 
+        self.heatmap_freq_selector.blockSignals(True)
+        self.heatmap_freq_selector.clear()
+        for freq in freqs:
+            self.heatmap_freq_selector.addItem(f"{freq/1e9:.2f} GHz")
+        self.heatmap_freq_selector.setEnabled(len(freqs) > 1)
+        self.heatmap_freq_selector.setCurrentIndex(0)
+        self.heatmap_freq_selector.blockSignals(False)
+
     def _update_rcs_plot(self) -> None:
         if self.result is None:
             return
@@ -509,6 +547,28 @@ class MainWindow(QtWidgets.QMainWindow):
         ax.set_title(title)
         ax.set_box_aspect((1, 1, 1))
         self.rcs3d_canvas.draw_idle()
+
+    def _update_heatmap_plot(self) -> None:
+        if self.result is None:
+            return
+        self.heatmap_canvas.clear()
+        ax = self.heatmap_canvas.figure.add_subplot(111)
+        freq_idx = self.heatmap_freq_selector.currentIndex()
+        freq_idx = max(0, min(freq_idx, len(self.result.frequencies_hz) - 1))
+        rcs = self.result.rcs_dbsm[freq_idx]
+        rcs = np.clip(rcs, self.heat_clip_min.value(), self.heat_clip_max.value())
+        az = self.result.azimuth_deg
+        el = self.result.elevation_deg
+        az_grid, el_grid = np.meshgrid(az, el)
+        pcm = ax.pcolormesh(az_grid, el_grid, rcs, shading="auto", cmap="inferno")
+        self.heatmap_canvas.figure.colorbar(pcm, ax=ax, label="RCS (dBsm)")
+        ax.set_xlabel("Azimuth (deg)")
+        ax.set_ylabel("Elevation (deg)")
+        title = f"RCS heatmap at {self.result.frequencies_hz[freq_idx]/1e9:.2f} GHz"
+        if self.result.radar_profile:
+            title += f" – {self.result.radar_profile}"
+        ax.set_title(title)
+        self.heatmap_canvas.draw_idle()
 
     # ------------------------------------------------------------------
     def _refresh_templates(self) -> None:
@@ -633,6 +693,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.polar_canvas.figure.savefig(path)
         rcs_path = Path(path).with_name(Path(path).stem + "_3d.png")
         self.rcs3d_canvas.figure.savefig(rcs_path)
+        heatmap_path = Path(path).with_name(Path(path).stem + "_heatmap.png")
+        self.heatmap_canvas.figure.savefig(heatmap_path)
 
     def _edit_materials(self) -> None:
         dialog = MaterialsDialog(self.material_db, parent=self)
