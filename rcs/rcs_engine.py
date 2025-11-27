@@ -14,7 +14,7 @@ from typing import Iterable, Sequence
 import numpy as np
 import trimesh
 
-from .diffraction import build_sharp_edges
+from .diffraction import build_sharp_edges, corner_field, edge_diffraction_field
 from .facet_po import facet_rcs
 from .math_utils import direction_grid, frequency_loss
 from .physics import MIN_ENERGY, build_ray_intersector
@@ -224,36 +224,57 @@ class RCSEngine:
                 rcs_lin = facet_rcs(mesh, reflectivity, freq_hz, directions)
             else:
                 rcs_lin = np.zeros(len(directions), dtype=float)
+                wavelength = self._compute_wavelength(freq_hz)
+                k = 2.0 * np.pi / wavelength
                 for idx, (origin, direction) in enumerate(zip(ray_origins, directions)):
                     if self._stop_requested:
                         break
-                    energy = 1.0
-                    contribution = 0.0
-                    ray_origin = origin
-                    ray_dir = direction
-                    for _ in range(settings.max_reflections):
-                        locs, _, tri_idx = mesh.ray.intersects_location(
-                            np.array([ray_origin]), np.array([ray_dir]), multiple_hits=False
-                        )
-                        if len(locs) == 0:
-                            break
-                        hit = locs[0]
-                        face_index = tri_idx[0]
-                        normal = mesh.face_normals[face_index]
-                        reflect_dir = ray_dir - 2 * np.dot(ray_dir, normal) * normal
-                        reflect_dir /= np.linalg.norm(reflect_dir)
+                    specular_sum = 0.0
+                    basis_u, basis_v = self._orthonormal_basis(direction)
+                    for ox, oy in bundle_grid:
+                        energy = 1.0
+                        contribution = 0.0
+                        ray_origin = origin + ox * basis_u + oy * basis_v
+                        ray_dir = direction
+                        for _ in range(settings.max_reflections):
+                            locs, _, tri_idx = mesh.ray.intersects_location(
+                                np.array([ray_origin]), np.array([ray_dir]), multiple_hits=False
+                            )
+                            if len(locs) == 0:
+                                break
+                            hit = locs[0]
+                            face_index = tri_idx[0]
+                            normal = mesh.face_normals[face_index]
+                            reflect_dir = ray_dir - 2 * np.dot(ray_dir, normal) * normal
+                            reflect_dir /= np.linalg.norm(reflect_dir)
 
-                        alignment = np.dot(reflect_dir, -ray_dir)
-                        if alignment > 0.95:
-                            contribution += energy * mesh.area_faces[face_index] * (np.dot(normal, -ray_dir)) ** 2
+                            alignment = np.dot(reflect_dir, -ray_dir)
+                            if alignment > 0.95:
+                                contribution += energy * mesh.area_faces[face_index] * (np.dot(normal, -ray_dir)) ** 2
 
-                        energy *= reflectivity * loss_per_reflection
-                        if energy < MIN_ENERGY:
-                            break
+                            energy *= reflectivity * loss_per_reflection
+                            if energy < MIN_ENERGY:
+                                break
 
-                        ray_origin = hit + 1e-4 * reflect_dir
-                        ray_dir = reflect_dir
-                    rcs_lin[idx] = max(contribution, 1e-10)
+                            ray_origin = hit + 1e-4 * reflect_dir
+                            ray_dir = reflect_dir
+                        specular_sum += contribution
+
+                    k_hat = direction / (np.linalg.norm(direction) + 1e-12)
+                    illum_mask = (mesh.face_normals @ -k_hat) > 0.0
+                    edge_term = edge_diffraction_field(edges, k_hat, k, mesh)
+                    corner_term = corner_field(
+                        k_hat,
+                        mesh.face_normals,
+                        mesh.area_faces,
+                        centers,
+                        k,
+                        illuminated_mask=illum_mask,
+                    )
+                    diffraction_power = reflectivity * np.abs(edge_term + corner_term) ** 2
+
+                    averaged_specular = specular_sum / len(bundle_grid)
+                    rcs_lin[idx] = max(averaged_specular + diffraction_power, 1e-10)
 
             rcs_lin = self._apply_powerplant_signatures(directions, rcs_lin, reflectivity, settings)
 
