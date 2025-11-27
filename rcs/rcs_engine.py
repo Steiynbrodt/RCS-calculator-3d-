@@ -218,6 +218,7 @@ class RCSEngine:
         doppler_all = np.zeros(len(freqs), dtype=float) if settings.target_speed_mps else None
         centers = mesh.triangles.mean(axis=1)
         edges = build_sharp_edges(mesh)
+        reflectivity = self._select_reflectivity(material, settings.polarization)
 
         for fi, freq_hz in enumerate(freqs):
             if self._stop_requested:
