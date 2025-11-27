@@ -236,11 +236,11 @@ class RCSEngine:
                 for idx, (origin, direction) in enumerate(zip(rx_origins, directions)):
                     if self._stop_requested:
                         break
-                    specular_sum = 0.0
+                    specular_sum = 0.0j
                     basis_u, basis_v = self._orthonormal_basis(direction)
                     for ox, oy in bundle_grid:
                         energy = 1.0
-                        contribution = 0.0
+                        path_length = 0.0
                         ray_origin = origin + ox * basis_u + oy * basis_v
                         ray_dir = direction
                         for _ in range(settings.max_reflections):
@@ -255,9 +255,14 @@ class RCSEngine:
                             reflect_dir = ray_dir - 2 * np.dot(ray_dir, normal) * normal
                             reflect_dir /= np.linalg.norm(reflect_dir)
 
+                            path_length += float(np.linalg.norm(hit - ray_origin))
+
                             alignment = np.dot(reflect_dir, -ray_dir)
                             if alignment > 0.95:
-                                contribution += energy * mesh.area_faces[face_index] * (np.dot(normal, -ray_dir)) ** 2
+                                area_term = mesh.area_faces[face_index] * (np.dot(normal, -ray_dir)) ** 2
+                                total_path = self._path_to_receiver(path_length, hit, origin, direction)
+                                phase = self._monostatic_phase(k, total_path)
+                                specular_sum += energy * area_term * np.exp(1j * phase)
 
                             energy *= reflectivity * loss_per_reflection
                             if energy < MIN_ENERGY:
@@ -265,7 +270,6 @@ class RCSEngine:
 
                             ray_origin = hit + 1e-4 * reflect_dir
                             ray_dir = reflect_dir
-                        specular_sum += contribution
 
                     k_hat = direction / (np.linalg.norm(direction) + 1e-12)
                     illum_mask = (mesh.face_normals @ -k_hat) > 0.0
@@ -281,7 +285,8 @@ class RCSEngine:
                     diffraction_power = reflectivity * np.abs(edge_term + corner_term) ** 2
 
                     averaged_specular = specular_sum / len(bundle_grid)
-                    rcs_lin[idx] = max(averaged_specular + diffraction_power, 1e-10)
+                    specular_power = np.abs(averaged_specular) ** 2
+                    rcs_lin[idx] = max(specular_power + diffraction_power, 1e-12)
 
             rcs_lin = self._apply_powerplant_signatures(directions, rcs_lin, reflectivity, settings)
 

@@ -8,6 +8,8 @@ rotating sub-meshes.
 
 from __future__ import annotations
 
+import dataclasses
+
 import numpy as np
 import trimesh
 
@@ -152,9 +154,7 @@ def compare_box(freq_hz: float = 10e9) -> dict[str, np.ndarray]:
     mat = _pec_material()
     ray_res = engine.compute(mesh, mat, settings)
 
-    settings_po = settings
-    settings_po = SimulationSettings(**settings_po.__dict__)
-    settings_po.method = "facet_po"
+    settings_po = dataclasses.replace(settings, method="facet_po")
     facet_res = engine.compute(mesh, mat, settings_po)
 
     return {
