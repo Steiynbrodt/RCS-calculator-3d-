@@ -14,6 +14,7 @@ from typing import Iterable, Sequence
 import numpy as np
 import trimesh
 
+from .diffraction import build_sharp_edges
 from .facet_po import facet_rcs
 from .math_utils import direction_grid, frequency_loss
 from .physics import MIN_ENERGY, build_ray_intersector
