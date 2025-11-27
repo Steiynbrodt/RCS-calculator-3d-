@@ -137,7 +137,13 @@ def simulate_nctr_signature(
 
     omega_body = 2 * np.pi * rpm / 60.0
     dt = 1.0 / prf
-    weights = _vertex_weights(mesh) * material.get("reflectivity", 1.0)
+    reflectivity = 1.0
+    if hasattr(material, "reflectivity"):
+        reflectivity = float(getattr(material, "reflectivity"))
+    elif hasattr(material, "get"):
+        reflectivity = float(material.get("reflectivity", 1.0))  # type: ignore[call-arg]
+
+    weights = _vertex_weights(mesh) * reflectivity
 
     signal = np.zeros(pulses, dtype=complex)
     max_range = float(np.max(np.abs(verts @ look_dir)))
