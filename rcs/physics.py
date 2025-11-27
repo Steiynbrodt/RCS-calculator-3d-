@@ -12,6 +12,45 @@ from .math_utils import frequency_loss, spherical_directions
 
 
 MIN_ENERGY = 1e-6
+C = 3.0e8
+
+
+def wavelength_from_frequency(freq_hz: float) -> float:
+    """Return wavelength for a given frequency (in metres)."""
+
+    return C / freq_hz
+
+
+def wavenumber_from_frequency(freq_hz: float) -> float:
+    """Return free-space wavenumber ``k`` for the supplied frequency.
+
+    The calculation assumes propagation in free space using the geometric
+    optics approximation without diffraction or mutual coupling.
+    """
+
+    wavelength = wavelength_from_frequency(freq_hz)
+    return 2.0 * np.pi / wavelength
+
+
+def monostatic_phase(k: float, path_length: float) -> float:
+    """Return round-trip phase for a monostatic path.
+
+    Parameters
+    ----------
+    k:
+        Wavenumber (rad/m) for the operating frequency.
+    path_length:
+        One-way geometric distance from the radar to the current scatter
+        point (metres).
+
+    Notes
+    -----
+    This helper assumes a free-space monostatic radar with no diffraction,
+    depolarisation, or mutual coupling. The returned phase corresponds to a
+    two-way path length of ``2 * path_length``.
+    """
+
+    return k * 2.0 * path_length
 
 
 def build_ray_intersector(mesh: trimesh.Trimesh):
@@ -152,4 +191,14 @@ def robust_freq_sweep(mesh: trimesh.Trimesh, material: dict, max_reflections: in
         plot_result()
 
 
-__all__ = ["simulate_rcs", "trace_ray", "robust_freq_sweep", "build_ray_intersector"]
+__all__ = [
+    "simulate_rcs",
+    "trace_ray",
+    "robust_freq_sweep",
+    "build_ray_intersector",
+    "wavelength_from_frequency",
+    "wavenumber_from_frequency",
+    "monostatic_phase",
+    "MIN_ENERGY",
+    "C",
+]
