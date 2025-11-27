@@ -71,10 +71,15 @@ def build_sharp_edges(mesh: trimesh.Trimesh) -> list[SharpEdge]:
         return []
 
     threshold = np.radians(EDGE_SHARPNESS_DEG)
-    for (f1, f2), edge_idx, angle in zip(adjacency, adjacency_edges, angles):
+    for (f1, f2), _, angle in zip(adjacency, adjacency_edges, angles):
         if angle < threshold:
             continue
-        v0, v1 = vertices[mesh.edges[edge_idx]]
+
+        shared_vertices = np.intersect1d(mesh.faces[f1], mesh.faces[f2])
+        if len(shared_vertices) != 2:
+            continue
+
+        v0, v1 = vertices[shared_vertices]
         direction = v1 - v0
         length = float(np.linalg.norm(direction))
         if length <= 1e-6:
@@ -108,7 +113,10 @@ def _edge_visible(edge: SharpEdge, k_hat: np.ndarray, mesh: trimesh.Trimesh | No
     if mesh is None:
         return True
     if not hasattr(mesh, "ray"):
-        mesh.ray = build_ray_intersector(mesh)
+        try:
+            mesh.ray = build_ray_intersector(mesh)
+        except ModuleNotFoundError:
+            return True
 
     origin = edge.center + k_i * (mesh.bounding_sphere.primitive.radius * 4.0 + 1.0)
     direction = -k_i

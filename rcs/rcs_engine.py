@@ -190,9 +190,11 @@ class RCSEngine:
     ) -> SimulationResult:
         if mesh is None:
             raise ValueError("A mesh must be provided for simulation.")
-        # Always build the intersector so missing optional dependencies are
-        # surfaced immediately instead of bubbling up from trimesh internals.
-        mesh.ray = build_ray_intersector(mesh)
+        # Only initialise the ray intersector when required. Facet-PO runs do
+        # not rely on the optional ``rtree``/``pyembree`` backends and should
+        # remain usable even when those dependencies are missing.
+        if settings.method == "ray":
+            mesh.ray = build_ray_intersector(mesh)
 
         freqs = settings.frequencies()
         az = settings.azimuths()
