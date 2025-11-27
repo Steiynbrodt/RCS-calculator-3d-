@@ -7,10 +7,6 @@ A Tkinter-based tool for estimating radar cross section (RCS) distributions of 3
 pip install -r requirements.txt
 ```
 
-> **Note:** Ray-tracing simulations rely on the optional `rtree` package for
-> spatial indexing. Installing `rtree` may require the system package
-> `libspatialindex` on some platforms.
-
 ## Usage
 Run the graphical interface via either command:
 ```
