@@ -5,6 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 
+import os
+
 import matplotlib.pyplot as plt
 import numpy as np
 import trimesh
@@ -312,6 +314,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self.method_combo.addItem("Facet summation (physical optics)", "facet_po")
         form.addRow("RCS method:", self.method_combo)
 
+        self.worker_spin = QtWidgets.QSpinBox()
+        self.worker_spin.setRange(0, max(1, (os.cpu_count() or 1) * 2))
+        self.worker_spin.setSpecialValueText("Auto (CPU count)")
+        self.worker_spin.setValue(0)
+        form.addRow("Worker threads:", self.worker_spin)
+
         # Material selection
         self.material_combo = QtWidgets.QComboBox()
         self.material_combo.addItems(self.material_db.names())
@@ -375,6 +383,14 @@ class MainWindow(QtWidgets.QMainWindow):
         self.heat_clip_min.valueChanged.connect(self._update_heatmap_plot)
         self.heat_clip_max.valueChanged.connect(self._update_heatmap_plot)
         self.heatmap_freq_selector.currentIndexChanged.connect(self._update_heatmap_plot)
+
+        # Powerplant controls
+        self.add_engine_btn.clicked.connect(self._add_engine)
+        self.edit_engine_btn.clicked.connect(self._edit_engine)
+        self.remove_engine_btn.clicked.connect(self._remove_engine)
+        self.add_prop_btn.clicked.connect(self._add_prop)
+        self.edit_prop_btn.clicked.connect(self._edit_prop)
+        self.remove_prop_btn.clicked.connect(self._remove_prop)
 
         # Menu bar
         file_menu = self.menuBar().addMenu("File")
@@ -624,11 +640,13 @@ class MainWindow(QtWidgets.QMainWindow):
         radar_profile = self.radar_combo.currentText()
         if radar_profile.startswith("Custom"):
             radar_profile = None
+        workers = self.worker_spin.value() or None
         return SimulationSettings(
             band=self.band_combo.currentText(),
             polarization=self.pol_combo.currentText(),
             max_reflections=self.reflections_spin.value(),
             method=self.method_combo.currentData(),
+            max_workers=workers,
             engines=list(self.engines),
             propellers=list(self.propellers),
             frequency_hz=freq,
@@ -858,6 +876,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.radar_combo.setCurrentText(state.settings.radar_profile)
         else:
             self.radar_combo.setCurrentText("Custom (manual)")
+        self.worker_spin.setValue(state.settings.max_workers or 0)
         self.az_start.setValue(state.settings.azimuth_start)
         self.az_stop.setValue(state.settings.azimuth_stop)
         self.az_step.setValue(state.settings.azimuth_step)
