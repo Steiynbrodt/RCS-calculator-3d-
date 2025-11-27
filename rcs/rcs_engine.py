@@ -236,11 +236,7 @@ class RCSEngine:
                 rcs_lin = facet_rcs(mesh, reflectivity, freq_hz, directions)
             else:
                 rcs_lin = np.zeros(len(directions), dtype=float)
-                workers = (
-                    settings.max_workers
-                    if settings.max_workers and settings.max_workers > 0
-                    else (os.cpu_count() or 1)
-                )
+                workers = settings.max_workers or (os.cpu_count() or 1)
                 chunk = 64
                 stop_flag = lambda: self._stop_requested  # noqa: E731
                 with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
