@@ -14,6 +14,7 @@ from typing import Iterable, Sequence
 import numpy as np
 import trimesh
 
+from .diffraction import build_sharp_edges, corner_field, edge_diffraction_field
 from .facet_po import facet_rcs
 from .math_utils import direction_grid, frequency_loss
 from .physics import MIN_ENERGY, build_ray_intersector
@@ -214,6 +215,8 @@ class RCSEngine:
 
         rcs_all = np.zeros((len(freqs), len(el), len(az)), dtype=float)
         doppler_all = np.zeros(len(freqs), dtype=float) if settings.target_speed_mps else None
+        centers = mesh.triangles.mean(axis=1)
+        edges = build_sharp_edges(mesh)
 
         for fi, freq_hz in enumerate(freqs):
             if self._stop_requested:
@@ -236,6 +239,18 @@ class RCSEngine:
                     illumination_origin = tx_origin if tx_origin is not None else rx_origin
                     basis_u, basis_v = self._orthonormal_basis(illumination_dir)
                     bundle_field = 0.0 + 0.0j
+                    inc_dir = -rx_dir
+                    illuminated_mask = (mesh.face_normals @ inc_dir) > 0.0
+                    corner = corner_field(
+                        k_hat=rx_dir,
+                        normals=mesh.face_normals,
+                        areas=mesh.area_faces,
+                        centers=centers,
+                        k=k,
+                        illuminated_mask=illuminated_mask,
+                    )
+                    corner *= reflectivity
+                    static_edge = edge_diffraction_field(edges, rx_dir, k, mesh) * reflectivity
                     for ox, oy in bundle_grid:
                         energy = 1.0
                         path_length = 0.0
@@ -260,17 +275,9 @@ class RCSEngine:
                             alignment = np.clip(np.dot(reflect_dir, -rx_dir), 0.0, 1.0)
                             cos_theta = np.clip(np.dot(normal, -ray_dir), 0.0, 1.0)
                             if alignment > 0.95 and cos_theta > 0.0:
-                                amp = (
-                                    energy
-                                    * mesh.area_faces[face_index]
-                                    * cos_theta
-                                    * reflectivity
-                                    / max(lambda_, 1e-12)
-                                )
-                                total_length = self._path_to_receiver(
-                                    path_length, hit, rx_origin, rx_dir
-                                )
-                                field += amp * np.exp(1j * self._monostatic_phase(k, total_length))
+                                amp = energy * mesh.area_faces[face_index] * cos_theta
+                                total_length = 2.0 * path_length
+                                field += amp * np.exp(1j * k * total_length)
 
                             energy *= reflectivity * loss_per_reflection
                             if energy < MIN_ENERGY:
@@ -280,7 +287,8 @@ class RCSEngine:
                             ray_dir = reflect_dir
                         bundle_field += field
                     averaged_field = bundle_field / len(bundle_grid)
-                    rcs_lin[idx] = max(np.abs(averaged_field) ** 2, 1e-20)
+                    total_field = averaged_field + corner + static_edge
+                    rcs_lin[idx] = max(np.abs(total_field) ** 2, 1e-20)
 
             rcs_lin = self._apply_powerplant_signatures(
                 directions, rcs_lin, reflectivity, settings
