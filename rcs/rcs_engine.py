@@ -14,6 +14,7 @@ from typing import Iterable, Sequence
 import numpy as np
 import trimesh
 
+from .diffraction import build_sharp_edges
 from .facet_po import facet_rcs
 from .math_utils import direction_grid, frequency_loss
 from .physics import MIN_ENERGY, build_ray_intersector
@@ -56,6 +57,8 @@ class SimulationSettings:
     polarization: str
     max_reflections: int
     method: str = "ray"  # "ray" | "facet_po"
+    engines: list["EngineMount"] = field(default_factory=list)
+    propellers: list["Propeller"] = field(default_factory=list)
     frequency_hz: float | None = None
     sweep: FrequencySweep | None = None
     azimuth_start: float = 0.0
