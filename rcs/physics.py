@@ -70,7 +70,24 @@ def _simulate_chunk(mesh: trimesh.Trimesh, reflectivity: float, freq_ghz: float,
     return np.fromiter((trace(origin=orig, direction=dir_vec) for orig, dir_vec in zip(origins, directions)), dtype=float)
 
 
-def simulate_rcs(mesh: trimesh.Trimesh, material: dict, max_reflections: int, freq_ghz: float, az_steps: int = 360, el_steps: int = 181, max_workers: int | None = None) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+def _material_reflectivity(material: object) -> float:
+    """Return a material's reflectivity for legacy dicts or dataclasses."""
+
+    if hasattr(material, "reflectivity"):
+        return float(getattr(material, "reflectivity"))
+
+    if hasattr(material, "get"):
+        value = material.get("reflectivity")  # type: ignore[call-arg]
+        if value is not None:
+            return float(value)
+
+    if isinstance(material, dict) and "reflectivity" in material:
+        return float(material["reflectivity"])
+
+    raise TypeError("Material must provide a 'reflectivity' attribute or key.")
+
+
+def simulate_rcs(mesh: trimesh.Trimesh, material: object, max_reflections: int, freq_ghz: float, az_steps: int = 360, el_steps: int = 181, max_workers: int | None = None) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Simulate RCS for a mesh using a grid of incoming directions."""
     if mesh is None or not hasattr(mesh, "bounding_sphere"):
         raise ValueError("Kein gültiges 3D-Mesh geladen.")
@@ -81,7 +98,7 @@ def simulate_rcs(mesh: trimesh.Trimesh, material: dict, max_reflections: int, fr
     az, el, dirs = spherical_directions(az_steps, el_steps)
     origins = mesh.bounding_sphere.center + 100 * (-dirs.reshape(-1, 3))
     directions = dirs.reshape(-1, 3)
-    reflectivity = material["reflectivity"]
+    reflectivity = _material_reflectivity(material)
 
     chunk_size = 2048
     rcs_lin = np.zeros(len(directions), dtype=float)
