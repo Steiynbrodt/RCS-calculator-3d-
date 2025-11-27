@@ -981,7 +981,7 @@ class MaterialsDialog(QtWidgets.QDialog):
         name = self.table.item(row, 0).text()
         material = self._prompt_material(name)
         if material:
-            self.db.update_material(name, **material.__dict__)
+            self.db.update_material(name, **material.as_dict())
             self._reload()
 
     def _delete(self) -> None:
