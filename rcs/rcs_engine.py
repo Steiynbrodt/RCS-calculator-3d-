@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from typing import Iterable, Sequence
 
 import numpy as np
@@ -10,7 +10,12 @@ import trimesh
 
 from .facet_po import facet_rcs
 from .math_utils import direction_grid, frequency_loss
-from .physics import MIN_ENERGY, build_ray_intersector
+from .physics import (
+    MIN_ENERGY,
+    build_ray_intersector,
+    monostatic_phase,
+    wavenumber_from_frequency,
+)
 
 
 BAND_DEFAULTS = {
@@ -146,6 +151,7 @@ class RCSEngine:
             if doppler_all is not None:
                 doppler_all[fi] = 2 * settings.target_speed_mps * freq_hz / 3e8
             loss_per_reflection = frequency_loss(freq_ghz)
+            k = wavenumber_from_frequency(freq_hz)
             if settings.method == "facet_po":
                 rcs_lin = facet_rcs(mesh, material.reflectivity, freq_hz, directions)
             else:
@@ -154,7 +160,8 @@ class RCSEngine:
                     if self._stop_requested:
                         break
                     energy = 1.0
-                    contribution = 0.0
+                    path_length = 0.0
+                    field = 0.0j
                     ray_origin = origin
                     ray_dir = direction
                     for _ in range(settings.max_reflections):
@@ -169,9 +176,14 @@ class RCSEngine:
                         reflect_dir = ray_dir - 2 * np.dot(ray_dir, normal) * normal
                         reflect_dir /= np.linalg.norm(reflect_dir)
 
+                        segment_len = np.linalg.norm(hit - ray_origin)
+                        path_length += segment_len
                         alignment = np.dot(reflect_dir, -ray_dir)
                         if alignment > 0.95:
-                            contribution += energy * mesh.area_faces[face_index] * (np.dot(normal, -ray_dir)) ** 2
+                            cos_theta = np.dot(normal, -ray_dir)
+                            amp = energy * mesh.area_faces[face_index] * cos_theta
+                            phase = monostatic_phase(k, path_length)
+                            field += amp * np.exp(1j * phase)
 
                         energy *= material.reflectivity * loss_per_reflection
                         if energy < MIN_ENERGY:
@@ -179,7 +191,7 @@ class RCSEngine:
 
                         ray_origin = hit + 1e-4 * reflect_dir
                         ray_dir = reflect_dir
-                    rcs_lin[idx] = max(contribution, 1e-10)
+                    rcs_lin[idx] = max(np.abs(field) ** 2, 1e-20)
 
             rcs_db = 10 * np.log10(rcs_lin.reshape(len(el), len(az)))
             rcs_all[fi] = rcs_db
@@ -198,6 +210,38 @@ class RCSEngine:
             radar_profile=settings.radar_profile,
             doppler_hz=doppler_all,
         )
+
+
+def _sanity_compare_methods() -> None:
+    """Run a quick comparison between ray and facet PO outputs on a box."""
+
+    import trimesh
+
+    engine = RCSEngine()
+    mesh = trimesh.creation.box(extents=(1.0, 1.0, 1.0))
+    material = Material("PEC", 1.0, 0.0, 1e7, 1.0)
+    settings = SimulationSettings(
+        band="X",
+        polarization="HH",
+        max_reflections=2,
+        method="ray",
+        frequency_hz=10e9,
+        azimuth_start=0,
+        azimuth_stop=90,
+        azimuth_step=30,
+        elevation_start=-30,
+        elevation_stop=30,
+        elevation_step=30,
+    )
+    ray_res = engine.compute(mesh, material, settings)
+    settings_po = replace(settings, method="facet_po")
+    facet_res = engine.compute(mesh, material, settings_po)
+    print("Ray (dBsm):\n", ray_res.rcs_dbsm[0])
+    print("Facet PO (dBsm):\n", facet_res.rcs_dbsm[0])
+
+
+if __name__ == "__main__":
+    _sanity_compare_methods()
 
 
 __all__ = [
