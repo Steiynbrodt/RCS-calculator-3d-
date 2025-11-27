@@ -227,7 +227,7 @@ class RCSEngine:
                 rcs_lin = facet_rcs(mesh, material.reflectivity, freq_hz, directions)
             else:
                 rcs_lin = np.zeros(len(directions), dtype=float)
-                for idx, (origin, direction) in enumerate(zip(origins, directions)):
+                for idx, (origin, direction) in enumerate(zip(rx_origins, directions)):
                     if self._stop_requested:
                         break
                     energy = 1.0
