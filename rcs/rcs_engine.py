@@ -70,6 +70,8 @@ class SimulationSettings:
     radar_profile: str | None = None
     tx_yaw_deg: float | None = None
     tx_elev_deg: float | None = None
+    engines: list[EngineMount] = field(default_factory=list)
+    propellers: list[Propeller] = field(default_factory=list)
 
     def frequencies(self) -> np.ndarray:
         if self.frequency_hz is not None:
@@ -198,15 +200,8 @@ class RCSEngine:
         dirs = direction_grid(az, el)
 
         distance = mesh.bounding_sphere.primitive.radius * 6.0 + 1.0
-        rx_origins = mesh.bounding_sphere.center + distance * (-dirs.reshape(-1, 3))
+        ray_origins = mesh.bounding_sphere.center + distance * (-dirs.reshape(-1, 3))
         directions = dirs.reshape(-1, 3)
-
-        if settings.tx_yaw_deg is not None and settings.tx_elev_deg is not None:
-            tx_dir = self._direction_from_angles(settings.tx_yaw_deg, settings.tx_elev_deg)
-            tx_origin = mesh.bounding_sphere.center + distance * (-tx_dir)
-        else:
-            tx_dir = None
-            tx_origin = None
 
         bundle_offsets = np.linspace(-0.6, 0.6, 3) * mesh.bounding_sphere.primitive.radius
         bundle_grid = np.array([(ox, oy) for ox in bundle_offsets for oy in bundle_offsets])
@@ -215,6 +210,7 @@ class RCSEngine:
         doppler_all = np.zeros(len(freqs), dtype=float) if settings.target_speed_mps else None
         centers = mesh.triangles.mean(axis=1)
         edges = build_sharp_edges(mesh)
+        reflectivity = self._select_reflectivity(material, settings.polarization)
 
         for fi, freq_hz in enumerate(freqs):
             if self._stop_requested:
@@ -224,10 +220,10 @@ class RCSEngine:
                 doppler_all[fi] = 2 * settings.target_speed_mps * freq_hz / 3e8
             loss_per_reflection = frequency_loss(freq_ghz)
             if settings.method == "facet_po":
-                rcs_lin = facet_rcs(mesh, material.reflectivity, freq_hz, directions)
+                rcs_lin = facet_rcs(mesh, reflectivity, freq_hz, directions)
             else:
                 rcs_lin = np.zeros(len(directions), dtype=float)
-                for idx, (origin, direction) in enumerate(zip(origins, directions)):
+                for idx, (origin, direction) in enumerate(zip(ray_origins, directions)):
                     if self._stop_requested:
                         break
                     energy = 1.0
@@ -250,13 +246,15 @@ class RCSEngine:
                         if alignment > 0.95:
                             contribution += energy * mesh.area_faces[face_index] * (np.dot(normal, -ray_dir)) ** 2
 
-                        energy *= material.reflectivity * loss_per_reflection
+                        energy *= reflectivity * loss_per_reflection
                         if energy < MIN_ENERGY:
                             break
 
                         ray_origin = hit + 1e-4 * reflect_dir
                         ray_dir = reflect_dir
                     rcs_lin[idx] = max(contribution, 1e-10)
+
+            rcs_lin = self._apply_powerplant_signatures(directions, rcs_lin, reflectivity, settings)
 
             rcs_db = 10 * np.log10(rcs_lin.reshape(len(el), len(az)))
             rcs_all[fi] = rcs_db
