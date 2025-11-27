@@ -14,7 +14,7 @@ from typing import Iterable, Sequence
 import numpy as np
 import trimesh
 
-from .diffraction import build_sharp_edges
+from .diffraction import build_sharp_edges, corner_field, edge_diffraction_field
 from .facet_po import facet_rcs
 from .math_utils import direction_grid, frequency_loss
 from .physics import MIN_ENERGY, build_ray_intersector
@@ -224,6 +224,8 @@ class RCSEngine:
             if self._stop_requested:
                 break
             freq_ghz = freq_hz / 1e9
+            wavelength = self._compute_wavelength(freq_hz)
+            k = 2 * np.pi / wavelength
             if doppler_all is not None:
                 doppler_all[fi] = 2 * settings.target_speed_mps * freq_hz / 3e8
             loss_per_reflection = frequency_loss(freq_ghz)
