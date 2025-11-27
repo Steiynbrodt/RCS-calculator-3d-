@@ -375,12 +375,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.heat_clip_min.valueChanged.connect(self._update_heatmap_plot)
         self.heat_clip_max.valueChanged.connect(self._update_heatmap_plot)
         self.heatmap_freq_selector.currentIndexChanged.connect(self._update_heatmap_plot)
-        self.add_engine_btn.clicked.connect(self._add_engine)
-        self.edit_engine_btn.clicked.connect(self._edit_engine)
-        self.remove_engine_btn.clicked.connect(self._remove_engine)
-        self.add_prop_btn.clicked.connect(self._add_prop)
-        self.edit_prop_btn.clicked.connect(self._edit_prop)
-        self.remove_prop_btn.clicked.connect(self._remove_prop)
 
         # Menu bar
         file_menu = self.menuBar().addMenu("File")

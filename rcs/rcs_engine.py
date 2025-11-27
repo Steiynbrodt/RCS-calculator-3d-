@@ -14,7 +14,6 @@ from typing import Iterable, Sequence
 import numpy as np
 import trimesh
 
-from .diffraction import build_sharp_edges, corner_field, edge_diffraction_field
 from .facet_po import facet_rcs
 from .math_utils import direction_grid, frequency_loss
 from .physics import MIN_ENERGY, build_ray_intersector
@@ -57,8 +56,6 @@ class SimulationSettings:
     polarization: str
     max_reflections: int
     method: str = "ray"  # "ray" | "facet_po"
-    engines: list["EngineMount"] = field(default_factory=list)
-    propellers: list["Propeller"] = field(default_factory=list)
     frequency_hz: float | None = None
     sweep: FrequencySweep | None = None
     azimuth_start: float = 0.0
@@ -226,76 +223,42 @@ class RCSEngine:
             if doppler_all is not None:
                 doppler_all[fi] = 2 * settings.target_speed_mps * freq_hz / 3e8
             loss_per_reflection = frequency_loss(freq_ghz)
-            lambda_ = self._compute_wavelength(freq_hz)
-            k = 2.0 * np.pi / lambda_
-            reflectivity = self._select_reflectivity(material, settings.polarization)
             if settings.method == "facet_po":
-                rcs_lin = facet_rcs(mesh, reflectivity, freq_hz, directions)
+                rcs_lin = facet_rcs(mesh, material.reflectivity, freq_hz, directions)
             else:
                 rcs_lin = np.zeros(len(directions), dtype=float)
-                for idx, (rx_origin, rx_dir) in enumerate(zip(rx_origins, directions)):
+                for idx, (origin, direction) in enumerate(zip(origins, directions)):
                     if self._stop_requested:
                         break
-                    illumination_dir = tx_dir if tx_dir is not None else rx_dir
-                    illumination_origin = tx_origin if tx_origin is not None else rx_origin
-                    basis_u, basis_v = self._orthonormal_basis(illumination_dir)
-                    bundle_field = 0.0 + 0.0j
-                    inc_dir = -rx_dir
-                    illuminated_mask = (mesh.face_normals @ inc_dir) > 0.0
-                    corner = corner_field(
-                        k_hat=rx_dir,
-                        normals=mesh.face_normals,
-                        areas=mesh.area_faces,
-                        centers=centers,
-                        k=k,
-                        illuminated_mask=illuminated_mask,
-                    )
-                    corner *= reflectivity
-                    static_edge = edge_diffraction_field(edges, rx_dir, k, mesh) * reflectivity
-                    for ox, oy in bundle_grid:
-                        energy = 1.0
-                        path_length = 0.0
-                        field = 0.0 + 0.0j
-                        ray_origin = illumination_origin + basis_u * ox + basis_v * oy
-                        ray_dir = illumination_dir
-                        for _ in range(settings.max_reflections):
-                            locs, _, tri_idx = mesh.ray.intersects_location(
-                                np.array([ray_origin]), np.array([ray_dir]), multiple_hits=False
-                            )
-                            if len(locs) == 0:
-                                break
-                            hit = locs[0]
-                            face_index = tri_idx[0]
-                            normal = mesh.face_normals[face_index]
-                            reflect_dir = ray_dir - 2 * np.dot(ray_dir, normal) * normal
-                            reflect_dir /= np.linalg.norm(reflect_dir)
+                    energy = 1.0
+                    contribution = 0.0
+                    ray_origin = origin
+                    ray_dir = direction
+                    for _ in range(settings.max_reflections):
+                        locs, _, tri_idx = mesh.ray.intersects_location(
+                            np.array([ray_origin]), np.array([ray_dir]), multiple_hits=False
+                        )
+                        if len(locs) == 0:
+                            break
+                        hit = locs[0]
+                        face_index = tri_idx[0]
+                        normal = mesh.face_normals[face_index]
+                        reflect_dir = ray_dir - 2 * np.dot(ray_dir, normal) * normal
+                        reflect_dir /= np.linalg.norm(reflect_dir)
 
-                            segment_len = float(np.linalg.norm(hit - ray_origin))
-                            path_length += segment_len
+                        alignment = np.dot(reflect_dir, -ray_dir)
+                        if alignment > 0.95:
+                            contribution += energy * mesh.area_faces[face_index] * (np.dot(normal, -ray_dir)) ** 2
 
-                            alignment = np.clip(np.dot(reflect_dir, -rx_dir), 0.0, 1.0)
-                            cos_theta = np.clip(np.dot(normal, -ray_dir), 0.0, 1.0)
-                            if alignment > 0.95 and cos_theta > 0.0:
-                                amp = energy * mesh.area_faces[face_index] * cos_theta
-                                total_length = 2.0 * path_length
-                                field += amp * np.exp(1j * k * total_length)
+                        energy *= material.reflectivity * loss_per_reflection
+                        if energy < MIN_ENERGY:
+                            break
 
-                            energy *= reflectivity * loss_per_reflection
-                            if energy < MIN_ENERGY:
-                                break
+                        ray_origin = hit + 1e-4 * reflect_dir
+                        ray_dir = reflect_dir
+                    rcs_lin[idx] = max(contribution, 1e-10)
 
-                            ray_origin = hit + 1e-4 * reflect_dir
-                            ray_dir = reflect_dir
-                        bundle_field += field
-                    averaged_field = bundle_field / len(bundle_grid)
-                    total_field = averaged_field + corner + static_edge
-                    rcs_lin[idx] = max(np.abs(total_field) ** 2, 1e-20)
-
-            rcs_lin = self._apply_powerplant_signatures(
-                directions, rcs_lin, reflectivity, settings
-            )
-
-            rcs_db = to_dbsm(rcs_lin.reshape(len(el), len(az)))
+            rcs_db = 10 * np.log10(rcs_lin.reshape(len(el), len(az)))
             rcs_all[fi] = rcs_db
             if progress:
                 progress(int((fi + 1) / len(freqs) * 100))
