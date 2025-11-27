@@ -1,4 +1,10 @@
-"""Core RCS simulation routines and data containers."""
+"""Core RCS simulation routines and data containers.
+
+The simplified engine keeps the public API stable for the GUI while adding
+lightweight physics-inspired effects such as coherent field summation,
+dual-polarization reflectivity selection, and optional bistatic geometry.
+All distances are in metres and frequencies in Hz unless stated otherwise.
+"""
 
 from __future__ import annotations
 
@@ -19,6 +25,15 @@ BAND_DEFAULTS = {
     "C": (4.0e9, 8.0e9),
     "X": (8.0e9, 12.0e9),
 }
+
+
+def to_dbsm(rcs_lin: np.ndarray) -> np.ndarray:
+    """Convert linear RCS (m^2) to decibel-square-metres.
+
+    Values are clipped to ``1e-20`` to avoid log singularities.
+    """
+
+    return 10.0 * np.log10(np.maximum(rcs_lin, 1e-20))
 
 
 @dataclass(slots=True)
@@ -55,6 +70,8 @@ class SimulationSettings:
     azimuth_slice_deg: float | None = None
     target_speed_mps: float = 0.0
     radar_profile: str | None = None
+    tx_yaw_deg: float | None = None
+    tx_elev_deg: float | None = None
 
     def frequencies(self) -> np.ndarray:
         if self.frequency_hz is not None:
@@ -73,13 +90,19 @@ class SimulationSettings:
 
 @dataclass(slots=True)
 class Material:
-    """Material properties used by the simplified RCS engine."""
+    """Material properties used by the simplified RCS engine.
+
+    ``reflectivity_h``/``reflectivity_v`` allow basic HH/VV differences; if
+    omitted the scalar ``reflectivity`` is used for all channels.
+    """
 
     name: str
     epsilon_real: float
     epsilon_imag: float
     conductivity: float
     reflectivity: float
+    reflectivity_h: float | None = None
+    reflectivity_v: float | None = None
 
     def as_dict(self) -> dict:
         return asdict(self)
@@ -87,7 +110,14 @@ class Material:
 
 @dataclass(slots=True)
 class SimulationResult:
-    """Container for RCS outputs."""
+    """Container for RCS outputs.
+
+    Notes
+    -----
+    ``rcs_dbsm`` expresses radar cross section in decibel-square-metres
+    (dBsm) relative to 1 m^2. Frequencies are expressed in Hz even when band
+    presets are provided in gigahertz.
+    """
 
     band: str
     polarization: str
@@ -168,8 +198,15 @@ class RCSEngine:
         dirs = direction_grid(az, el)
 
         distance = mesh.bounding_sphere.primitive.radius * 6.0 + 1.0
-        origins = mesh.bounding_sphere.center + distance * (-dirs.reshape(-1, 3))
+        rx_origins = mesh.bounding_sphere.center + distance * (-dirs.reshape(-1, 3))
         directions = dirs.reshape(-1, 3)
+
+        if settings.tx_yaw_deg is not None and settings.tx_elev_deg is not None:
+            tx_dir = self._direction_from_angles(settings.tx_yaw_deg, settings.tx_elev_deg)
+            tx_origin = mesh.bounding_sphere.center + distance * (-tx_dir)
+        else:
+            tx_dir = None
+            tx_origin = None
 
         bundle_offsets = np.linspace(-0.6, 0.6, 3) * mesh.bounding_sphere.primitive.radius
         bundle_grid = np.array([(ox, oy) for ox in bundle_offsets for oy in bundle_offsets])
@@ -184,20 +221,26 @@ class RCSEngine:
             if doppler_all is not None:
                 doppler_all[fi] = 2 * settings.target_speed_mps * freq_hz / 3e8
             loss_per_reflection = frequency_loss(freq_ghz)
+            lambda_ = self._compute_wavelength(freq_hz)
+            k = 2.0 * np.pi / lambda_
+            reflectivity = self._select_reflectivity(material, settings.polarization)
             if settings.method == "facet_po":
-                rcs_lin = facet_rcs(mesh, material.reflectivity, freq_hz, directions)
+                rcs_lin = facet_rcs(mesh, reflectivity, freq_hz, directions)
             else:
                 rcs_lin = np.zeros(len(directions), dtype=float)
-                for idx, (origin, direction) in enumerate(zip(origins, directions)):
+                for idx, (rx_origin, rx_dir) in enumerate(zip(rx_origins, directions)):
                     if self._stop_requested:
                         break
-                    basis_u, basis_v = self._orthonormal_basis(direction)
-                    bundle_contrib = 0.0
+                    illumination_dir = tx_dir if tx_dir is not None else rx_dir
+                    illumination_origin = tx_origin if tx_origin is not None else rx_origin
+                    basis_u, basis_v = self._orthonormal_basis(illumination_dir)
+                    bundle_field = 0.0 + 0.0j
                     for ox, oy in bundle_grid:
                         energy = 1.0
-                        contribution = 0.0
-                        ray_origin = origin + basis_u * ox + basis_v * oy
-                        ray_dir = direction
+                        path_length = 0.0
+                        field = 0.0 + 0.0j
+                        ray_origin = illumination_origin + basis_u * ox + basis_v * oy
+                        ray_dir = illumination_dir
                         for _ in range(settings.max_reflections):
                             locs, _, tri_idx = mesh.ray.intersects_location(
                                 np.array([ray_origin]), np.array([ray_dir]), multiple_hits=False
@@ -210,25 +253,39 @@ class RCSEngine:
                             reflect_dir = ray_dir - 2 * np.dot(ray_dir, normal) * normal
                             reflect_dir /= np.linalg.norm(reflect_dir)
 
-                            alignment = np.clip(np.dot(reflect_dir, -ray_dir), 0.0, 1.0)
-                            lambertian = np.clip(np.dot(normal, -ray_dir), 0.0, 1.0)
-                            specular = alignment**2
-                            contribution += energy * mesh.area_faces[face_index] * (
-                                0.6 * lambertian + 0.4 * specular
-                            )
+                            segment_len = float(np.linalg.norm(hit - ray_origin))
+                            path_length += segment_len
 
-                            energy *= material.reflectivity * loss_per_reflection
+                            alignment = np.clip(np.dot(reflect_dir, -rx_dir), 0.0, 1.0)
+                            cos_theta = np.clip(np.dot(normal, -ray_dir), 0.0, 1.0)
+                            if alignment > 0.95 and cos_theta > 0.0:
+                                amp = (
+                                    energy
+                                    * mesh.area_faces[face_index]
+                                    * cos_theta
+                                    * reflectivity
+                                    / max(lambda_, 1e-12)
+                                )
+                                total_length = self._path_to_receiver(
+                                    path_length, hit, rx_origin, rx_dir
+                                )
+                                field += amp * np.exp(1j * self._monostatic_phase(k, total_length))
+
+                            energy *= reflectivity * loss_per_reflection
                             if energy < MIN_ENERGY:
                                 break
 
                             ray_origin = hit + 1e-4 * reflect_dir
                             ray_dir = reflect_dir
-                        bundle_contrib += contribution
-                    rcs_lin[idx] = max(bundle_contrib / len(bundle_grid), 1e-10)
+                        bundle_field += field
+                    averaged_field = bundle_field / len(bundle_grid)
+                    rcs_lin[idx] = max(np.abs(averaged_field) ** 2, 1e-20)
 
-            rcs_lin = self._apply_powerplant_signatures(directions, rcs_lin, material.reflectivity, settings)
+            rcs_lin = self._apply_powerplant_signatures(
+                directions, rcs_lin, reflectivity, settings
+            )
 
-            rcs_db = 10 * np.log10(rcs_lin.reshape(len(el), len(az)))
+            rcs_db = to_dbsm(rcs_lin.reshape(len(el), len(az)))
             rcs_all[fi] = rcs_db
             if progress:
                 progress(int((fi + 1) / len(freqs) * 100))
@@ -297,14 +354,87 @@ class RCSEngine:
         v /= np.linalg.norm(v) + 1e-12
         return u, v
 
+    @staticmethod
+    def _compute_wavelength(freq_hz: float) -> float:
+        """Return the free-space wavelength (metres) for ``freq_hz``."""
 
-    __all__ = [
-        "BAND_DEFAULTS",
-        "FrequencySweep",
-        "SimulationSettings",
-        "Material",
-        "EngineMount",
-        "Propeller",
-        "SimulationResult",
-        "RCSEngine",
-    ]
+        c = 3e8
+        return c / max(freq_hz, 1e-9)
+
+    @staticmethod
+    def _monostatic_phase(k: float, total_path_length: float) -> float:
+        """Compute the propagation phase for a given total path length.
+
+        Parameters
+        ----------
+        k:
+            Wavenumber ``2*pi/lambda``.
+        total_path_length:
+            Total travelled path length in metres (already including outbound
+            and inbound paths where appropriate).
+        """
+
+        return k * total_path_length
+
+    @staticmethod
+    def _direction_from_angles(yaw_deg: float, elev_deg: float) -> np.ndarray:
+        """Convert azimuth/elevation angles in degrees to a unit vector."""
+
+        az = np.radians(yaw_deg)
+        el = np.radians(elev_deg)
+        return np.array(
+            [
+                np.cos(el) * np.cos(az),
+                np.cos(el) * np.sin(az),
+                np.sin(el),
+            ]
+        )
+
+    @staticmethod
+    def _path_to_receiver(
+        path_length: float, hit: np.ndarray, rx_origin: np.ndarray, rx_dir: np.ndarray
+    ) -> float:
+        """Approximate total Tx-to-hit plus hit-to-Rx distance for phase.
+
+        The ray tracing loop accumulates ``path_length`` along the transmit
+        path. The additional leg to the receiver is approximated using the
+        straight-line distance to the receiver origin placed on the far-field
+        sphere along ``rx_dir``.
+        """
+
+        del rx_dir  # Receiver orientation is implicit in ``rx_origin``.
+        return path_length + float(np.linalg.norm(hit - rx_origin))
+
+    @staticmethod
+    def _select_reflectivity(material: Material, polarization: str) -> float:
+        """Choose an effective scalar reflectivity for the desired polarization.
+
+        This is a simplified HH/VV selector. If polarization-specific values
+        are not provided the broadband ``reflectivity`` is used. Cross/Co-pol
+        flags collapse to averages rather than a full scattering matrix.
+        """
+
+        pol = polarization.upper()
+        refl_h = material.reflectivity_h if material.reflectivity_h is not None else material.reflectivity
+        refl_v = material.reflectivity_v if material.reflectivity_v is not None else material.reflectivity
+
+        if pol.startswith("H"):
+            return refl_h
+        if pol.startswith("V"):
+            return refl_v
+        if "CROSS" in pol or pol.startswith("X"):
+            return 0.5 * (refl_h + refl_v) * 0.5
+        return 0.5 * (refl_h + refl_v)
+
+
+__all__ = [
+    "BAND_DEFAULTS",
+    "FrequencySweep",
+    "SimulationSettings",
+    "Material",
+    "EngineMount",
+    "Propeller",
+    "SimulationResult",
+    "RCSEngine",
+    "to_dbsm",
+]
