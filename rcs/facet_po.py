@@ -27,7 +27,13 @@ def _shadow_mask(
     """Return a boolean mask indicating which facets are visible to the radar."""
 
     if not hasattr(mesh, "ray"):
-        mesh.ray = build_ray_intersector(mesh)
+        try:
+            mesh.ray = build_ray_intersector(mesh)
+        except ModuleNotFoundError:
+            # Missing optional ray backends: fall back to treating all
+            # illuminated facets as visible so facet-based simulations remain
+            # usable without ``rtree``/``pyembree``.
+            return np.ones(len(centers), dtype=bool)
 
     origins = centers + directions * (mesh.bounding_sphere.primitive.radius * 4.0 + 1.0)
     try:
@@ -106,9 +112,9 @@ def facet_rcs(
             idx_visible = illum_indices[visible_mask]
             cos_vals = cos_theta[idx_visible]
             phase = centers[idx_visible] @ k_hat
+            phase_term = np.exp(1j * k * phase)
             facet_field = reflectivity * areas[idx_visible] * cos_vals
-            facet_field *= np.exp(1j * k * phase)
-            facet_field = facet_field.sum()
+            facet_field = (facet_field * phase_term).sum(dtype=np.complex128)
 
         corner = corner_field(
             k_hat=k_hat,

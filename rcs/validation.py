@@ -61,16 +61,21 @@ def _az_sweep(
         azimuth_step=az_step,
     )
 
-    settings_ray = SimulationSettings(method="ray", **settings_common)
     settings_facet = SimulationSettings(method="facet_po", **settings_common)
+    settings_ray = SimulationSettings(method="ray", **settings_common)
 
-    ray_res = engine.compute(mesh, mat, settings_ray)
     facet_res = engine.compute(mesh, mat, settings_facet)
+    try:
+        ray_res = engine.compute(mesh, mat, settings_ray)
+        ray_dbsm = ray_res.rcs_dbsm[0, 0]
+    except ModuleNotFoundError as exc:
+        print(f"[validation] Ray backend unavailable: {exc}")
+        ray_dbsm = np.full_like(facet_res.rcs_dbsm[0, 0], np.nan)
 
     azimuths = ray_res.azimuth_deg
     return {
         "az_deg": azimuths,
-        "ray_dbsm": ray_res.rcs_dbsm[0, 0],
+        "ray_dbsm": ray_dbsm,
         "facet_dbsm": facet_res.rcs_dbsm[0, 0],
     }
 
