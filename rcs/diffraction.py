@@ -63,18 +63,21 @@ def build_sharp_edges(mesh: trimesh.Trimesh) -> list[SharpEdge]:
     edges: list[SharpEdge] = []
     angles = mesh.face_adjacency_angles
     adjacency = mesh.face_adjacency
-    adjacency_edges = mesh.face_adjacency_edges
     vertices = mesh.vertices
     normals = mesh.face_normals
 
-    if angles is None or adjacency is None or adjacency_edges is None:
+    if angles is None or adjacency is None:
         return []
 
     threshold = np.radians(EDGE_SHARPNESS_DEG)
-    for (f1, f2), edge_idx, angle in zip(adjacency, adjacency_edges, angles):
+    faces = mesh.faces
+    for (f1, f2), angle in zip(adjacency, angles):
         if angle < threshold:
             continue
-        v0, v1 = vertices[mesh.edges[edge_idx]]
+        shared_verts = np.intersect1d(faces[f1], faces[f2])
+        if len(shared_verts) != 2:
+            continue
+        v0, v1 = vertices[shared_verts]
         direction = v1 - v0
         length = float(np.linalg.norm(direction))
         if length <= 1e-6:
@@ -131,8 +134,12 @@ def edge_diffraction_field(
 ) -> complex:
     """Sum heuristic edge diffraction contributions for a single direction."""
 
+    edge_list = list(edges) if edges is not None else []
+    if len(edge_list) == 0:
+        return 0.0 + 0.0j
+
     field = 0.0 + 0.0j
-    for edge in edges:
+    for edge in edge_list:
         if not _edge_visible(edge, k_hat, mesh):
             continue
         amp = EDGE_DIFFRACTION_GAIN * np.sqrt(max(edge.length, 1e-12))

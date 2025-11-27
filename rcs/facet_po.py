@@ -27,7 +27,12 @@ def _shadow_mask(
     """Return a boolean mask indicating which facets are visible to the radar."""
 
     if not hasattr(mesh, "ray"):
-        mesh.ray = build_ray_intersector(mesh)
+        try:
+            mesh.ray = build_ray_intersector(mesh)
+        except ModuleNotFoundError:
+            # Ray intersectors require optional dependencies (rtree/pyembree). If
+            # unavailable, disable shadowing gracefully instead of failing.
+            return np.ones(len(centers), dtype=bool)
 
     origins = centers + directions * (mesh.bounding_sphere.primitive.radius * 4.0 + 1.0)
     try:
@@ -64,7 +69,7 @@ def facet_rcs(
         Radar frequency in Hz.
     directions:
         Array of unit vectors pointing from target towards the receiver for each
-        look direction (shape: ``[N, 3]``).
+        look direction (shape: ``[N, 3]`` or a single ``(3,)`` vector).
 
     Returns
     -------
@@ -72,8 +77,22 @@ def facet_rcs(
         Linear RCS (m^2) per look direction.
     """
 
+    directions_arr = np.asarray(directions, dtype=float)
+    if directions_arr.size == 0:
+        return np.zeros(0, dtype=float)
+    if directions_arr.ndim == 1:
+        if directions_arr.size != 3:
+            raise ValueError(
+                "directions must be a sequence of 3D unit vectors shaped (N, 3)"
+            )
+        directions_arr = directions_arr.reshape(1, 3)
+    elif directions_arr.shape[-1] != 3:
+        raise ValueError(
+            "directions must be a sequence of 3D unit vectors shaped (N, 3)"
+        )
+
     if mesh is None or len(mesh.faces) == 0:
-        return np.zeros(len(directions), dtype=float)
+        return np.zeros(len(directions_arr), dtype=float)
 
     c = 3e8
     wavelength = c / max(freq_hz, 1e-9)
@@ -84,9 +103,9 @@ def facet_rcs(
     centers = mesh.triangles.mean(axis=1)  # (F, 3)
     edge_catalog = build_sharp_edges(mesh) if EDGE_DIFFRACTION_ENABLED else []
 
-    rcs = np.zeros(len(directions), dtype=float)
+    rcs = np.zeros(len(directions_arr), dtype=float)
 
-    for idx, k_hat in enumerate(directions):
+    for idx, k_hat in enumerate(directions_arr):
         inc_dir = -k_hat
         cos_theta = normals @ inc_dir
         illuminated = cos_theta > 0.0
@@ -106,9 +125,12 @@ def facet_rcs(
             idx_visible = illum_indices[visible_mask]
             cos_vals = cos_theta[idx_visible]
             phase = centers[idx_visible] @ k_hat
-            facet_field = reflectivity * areas[idx_visible] * cos_vals
-            facet_field *= np.exp(1j * k * phase)
-            facet_field = facet_field.sum()
+            facet_field = (
+                reflectivity
+                * areas[idx_visible]
+                * cos_vals
+                * np.exp(1j * k * phase)
+            ).sum()
 
         corner = corner_field(
             k_hat=k_hat,
@@ -120,8 +142,10 @@ def facet_rcs(
         )
 
         edge_field = 0.0 + 0.0j
-        if EDGE_DIFFRACTION_ENABLED and edge_catalog:
-            edge_field = edge_diffraction_field(edge_catalog, k_hat, k, mesh if SHADOWING_ENABLED else None)
+        if EDGE_DIFFRACTION_ENABLED and len(edge_catalog) > 0:
+            edge_field = edge_diffraction_field(
+                edge_catalog, k_hat, k, mesh if SHADOWING_ENABLED else None
+            )
 
         total_field = facet_field + edge_field + corner
         rcs[idx] = np.abs(total_field) ** 2

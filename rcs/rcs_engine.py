@@ -190,9 +190,10 @@ class RCSEngine:
     ) -> SimulationResult:
         if mesh is None:
             raise ValueError("A mesh must be provided for simulation.")
-        # Always build the intersector so missing optional dependencies are
-        # surfaced immediately instead of bubbling up from trimesh internals.
-        mesh.ray = build_ray_intersector(mesh)
+        # Only build the ray intersector when the ray-tracing engine is used; the
+        # facet-based path can run without optional ray backends installed.
+        if settings.method != "facet_po":
+            mesh.ray = build_ray_intersector(mesh)
 
         freqs = settings.frequencies()
         az = settings.azimuths()
