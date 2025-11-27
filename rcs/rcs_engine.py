@@ -9,7 +9,9 @@ All distances are in metres and frequencies in Hz unless stated otherwise.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
+import os
 from typing import Iterable, Sequence
+import concurrent.futures
 
 import numpy as np
 import trimesh
@@ -73,6 +75,7 @@ class SimulationSettings:
     radar_profile: str | None = None
     tx_yaw_deg: float | None = None
     tx_elev_deg: float | None = None
+    max_workers: int | None = None
 
     def frequencies(self) -> np.ndarray:
         if self.frequency_hz is not None:
@@ -201,8 +204,8 @@ class RCSEngine:
         dirs = direction_grid(az, el)
 
         distance = mesh.bounding_sphere.primitive.radius * 6.0 + 1.0
-        rx_origins = mesh.bounding_sphere.center + distance * (-dirs.reshape(-1, 3))
         directions = dirs.reshape(-1, 3)
+        sphere_center = mesh.bounding_sphere.center
 
         if settings.tx_yaw_deg is not None and settings.tx_elev_deg is not None:
             tx_dir = self._direction_from_angles(settings.tx_yaw_deg, settings.tx_elev_deg)
@@ -233,60 +236,42 @@ class RCSEngine:
                 rcs_lin = facet_rcs(mesh, reflectivity, freq_hz, directions)
             else:
                 rcs_lin = np.zeros(len(directions), dtype=float)
-                for idx, (origin, direction) in enumerate(zip(rx_origins, directions)):
-                    if self._stop_requested:
-                        break
-                    specular_sum = 0.0j
-                    basis_u, basis_v = self._orthonormal_basis(direction)
-                    for ox, oy in bundle_grid:
-                        energy = 1.0
-                        path_length = 0.0
-                        ray_origin = origin + ox * basis_u + oy * basis_v
-                        ray_dir = direction
-                        for _ in range(settings.max_reflections):
-                            locs, _, tri_idx = mesh.ray.intersects_location(
-                                np.array([ray_origin]), np.array([ray_dir]), multiple_hits=False
+                workers = settings.max_workers or (os.cpu_count() or 1)
+                chunk = 64
+                stop_flag = lambda: self._stop_requested  # noqa: E731
+                with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
+                    futures: dict[concurrent.futures.Future[np.ndarray], slice] = {}
+                    for start in range(0, len(directions), chunk):
+                        end = min(len(directions), start + chunk)
+                        dir_chunk = directions[start:end]
+                        futures[
+                            executor.submit(
+                                self._trace_direction_block,
+                                mesh,
+                                dir_chunk,
+                                bundle_grid,
+                                settings.max_reflections,
+                                reflectivity,
+                                loss_per_reflection,
+                                k,
+                                edges,
+                                centers,
+                                stop_flag,
+                                sphere_center,
+                                distance,
                             )
-                            if len(locs) == 0:
+                        ] = slice(start, end)
+
+                    try:
+                        for fut in concurrent.futures.as_completed(futures):
+                            rcs_lin[futures[fut]] = fut.result()
+                            if self._stop_requested:
                                 break
-                            hit = locs[0]
-                            face_index = tri_idx[0]
-                            normal = mesh.face_normals[face_index]
-                            reflect_dir = ray_dir - 2 * np.dot(ray_dir, normal) * normal
-                            reflect_dir /= np.linalg.norm(reflect_dir)
+                    finally:
+                        executor.shutdown(cancel_futures=True)
 
-                            path_length += float(np.linalg.norm(hit - ray_origin))
-
-                            alignment = np.dot(reflect_dir, -ray_dir)
-                            if alignment > 0.95:
-                                area_term = mesh.area_faces[face_index] * (np.dot(normal, -ray_dir)) ** 2
-                                total_path = self._path_to_receiver(path_length, hit, origin, direction)
-                                phase = self._monostatic_phase(k, total_path)
-                                specular_sum += energy * area_term * np.exp(1j * phase)
-
-                            energy *= reflectivity * loss_per_reflection
-                            if energy < MIN_ENERGY:
-                                break
-
-                            ray_origin = hit + 1e-4 * reflect_dir
-                            ray_dir = reflect_dir
-
-                    k_hat = direction / (np.linalg.norm(direction) + 1e-12)
-                    illum_mask = (mesh.face_normals @ -k_hat) > 0.0
-                    edge_term = edge_diffraction_field(edges, k_hat, k, mesh)
-                    corner_term = corner_field(
-                        k_hat,
-                        mesh.face_normals,
-                        mesh.area_faces,
-                        centers,
-                        k,
-                        illuminated_mask=illum_mask,
-                    )
-                    diffraction_power = reflectivity * np.abs(edge_term + corner_term) ** 2
-
-                    averaged_specular = specular_sum / len(bundle_grid)
-                    specular_power = np.abs(averaged_specular) ** 2
-                    rcs_lin[idx] = max(specular_power + diffraction_power, 1e-12)
+                if self._stop_requested:
+                    break
 
             rcs_lin = self._apply_powerplant_signatures(directions, rcs_lin, reflectivity, settings)
 
@@ -342,6 +327,83 @@ class RCSEngine:
                 enhanced += reflectivity * disk_area * blade_fill * alignment * doppler_gain
 
         return enhanced
+
+    def _trace_direction_block(
+        self,
+        mesh: trimesh.Trimesh,
+        directions: np.ndarray,
+        bundle_grid: np.ndarray,
+        max_reflections: int,
+        reflectivity: float,
+        loss_per_reflection: float,
+        k: float,
+        edges: tuple,
+        centers: np.ndarray,
+        stop_cb,
+        origin_center: np.ndarray,
+        origin_distance: float,
+    ) -> np.ndarray:
+        """Trace a batch of directions and return their linear RCS contributions."""
+
+        results = np.zeros(len(directions), dtype=float)
+        for idx, direction in enumerate(directions):
+            if stop_cb():
+                break
+
+            origin = origin_center - origin_distance * direction
+            specular_sum = 0.0j
+            basis_u, basis_v = self._orthonormal_basis(direction)
+            for ox, oy in bundle_grid:
+                energy = 1.0
+                path_length = 0.0
+                ray_origin = origin + ox * basis_u + oy * basis_v
+                ray_dir = direction
+                for _ in range(max_reflections):
+                    locs, _, tri_idx = mesh.ray.intersects_location(
+                        np.array([ray_origin]), np.array([ray_dir]), multiple_hits=False
+                    )
+                    if len(locs) == 0:
+                        break
+                    hit = locs[0]
+                    face_index = tri_idx[0]
+                    normal = mesh.face_normals[face_index]
+                    reflect_dir = ray_dir - 2 * np.dot(ray_dir, normal) * normal
+                    reflect_dir /= np.linalg.norm(reflect_dir)
+
+                    path_length += float(np.linalg.norm(hit - ray_origin))
+
+                    alignment = np.dot(reflect_dir, -ray_dir)
+                    if alignment > 0.95:
+                        area_term = mesh.area_faces[face_index] * (np.dot(normal, -ray_dir)) ** 2
+                        total_path = self._path_to_receiver(path_length, hit, origin, direction)
+                        phase = self._monostatic_phase(k, total_path)
+                        specular_sum += energy * area_term * np.exp(1j * phase)
+
+                    energy *= reflectivity * loss_per_reflection
+                    if energy < MIN_ENERGY:
+                        break
+
+                    ray_origin = hit + 1e-4 * reflect_dir
+                    ray_dir = reflect_dir
+
+            k_hat = direction / (np.linalg.norm(direction) + 1e-12)
+            illum_mask = (mesh.face_normals @ -k_hat) > 0.0
+            edge_term = edge_diffraction_field(edges, k_hat, k, mesh)
+            corner_term = corner_field(
+                k_hat,
+                mesh.face_normals,
+                mesh.area_faces,
+                centers,
+                k,
+                illuminated_mask=illum_mask,
+            )
+            diffraction_power = reflectivity * np.abs(edge_term + corner_term) ** 2
+
+            averaged_specular = specular_sum / len(bundle_grid)
+            specular_power = np.abs(averaged_specular) ** 2
+            results[idx] = max(specular_power + diffraction_power, 1e-12)
+
+        return results
 
     @staticmethod
     def _orthonormal_basis(direction: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
