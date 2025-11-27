@@ -5,3 +5,4 @@ pyvista
 trimesh
 scipy
 Pillow
+rtree
