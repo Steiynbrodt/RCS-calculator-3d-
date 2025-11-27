@@ -14,7 +14,7 @@ from typing import Iterable, Sequence
 import numpy as np
 import trimesh
 
-from .diffraction import build_sharp_edges, corner_field, edge_diffraction_field
+from .diffraction import build_sharp_edges
 from .facet_po import facet_rcs
 from .math_utils import direction_grid, frequency_loss
 from .physics import MIN_ENERGY, build_ray_intersector
@@ -201,8 +201,15 @@ class RCSEngine:
         dirs = direction_grid(az, el)
 
         distance = mesh.bounding_sphere.primitive.radius * 6.0 + 1.0
-        ray_origins = mesh.bounding_sphere.center + distance * (-dirs.reshape(-1, 3))
+        rx_origins = mesh.bounding_sphere.center + distance * (-dirs.reshape(-1, 3))
         directions = dirs.reshape(-1, 3)
+
+        if settings.tx_yaw_deg is not None and settings.tx_elev_deg is not None:
+            tx_dir = self._direction_from_angles(settings.tx_yaw_deg, settings.tx_elev_deg)
+            tx_origin = mesh.bounding_sphere.center + distance * (-tx_dir)
+        else:
+            tx_dir = None
+            tx_origin = None
 
         bundle_offsets = np.linspace(-0.6, 0.6, 3) * mesh.bounding_sphere.primitive.radius
         bundle_grid = np.array([(ox, oy) for ox in bundle_offsets for oy in bundle_offsets])
@@ -211,7 +218,6 @@ class RCSEngine:
         doppler_all = np.zeros(len(freqs), dtype=float) if settings.target_speed_mps else None
         centers = mesh.triangles.mean(axis=1)
         edges = build_sharp_edges(mesh)
-        reflectivity = self._select_reflectivity(material, settings.polarization)
 
         for fi, freq_hz in enumerate(freqs):
             if self._stop_requested:
@@ -224,9 +230,7 @@ class RCSEngine:
                 rcs_lin = facet_rcs(mesh, reflectivity, freq_hz, directions)
             else:
                 rcs_lin = np.zeros(len(directions), dtype=float)
-                wavelength = self._compute_wavelength(freq_hz)
-                k = 2.0 * np.pi / wavelength
-                for idx, (origin, direction) in enumerate(zip(ray_origins, directions)):
+                for idx, (origin, direction) in enumerate(zip(rx_origins, directions)):
                     if self._stop_requested:
                         break
                     specular_sum = 0.0
