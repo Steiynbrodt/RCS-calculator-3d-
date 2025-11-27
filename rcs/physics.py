@@ -21,21 +21,9 @@ def build_ray_intersector(mesh: trimesh.Trimesh):
 
         return RayMeshIntersector(mesh)
     except Exception:
-        try:
-            # ``ray_triangle`` relies on an R-tree accelerator. Surface this as a
-            # clear error instead of bubbling up a low-level ``ModuleNotFound``
-            # from trimesh internals so the GUI can present an actionable
-            # message.
-            import rtree  # noqa: F401
+        from trimesh.ray.ray_triangle import RayMeshIntersector
 
-            from trimesh.ray.ray_triangle import RayMeshIntersector
-
-            return RayMeshIntersector(mesh)
-        except ModuleNotFoundError as exc:  # pragma: no cover - environment specific
-            raise ModuleNotFoundError(
-                "Missing optional dependency 'rtree'. Install it via 'pip install rtree' "
-                "to enable ray-tracing based simulations."
-            ) from exc
+        return RayMeshIntersector(mesh)
 
 
 def trace_ray(mesh: trimesh.Trimesh, origin: np.ndarray, direction: np.ndarray, max_depth: int, reflectivity: float, freq_ghz: float) -> float:
@@ -82,24 +70,7 @@ def _simulate_chunk(mesh: trimesh.Trimesh, reflectivity: float, freq_ghz: float,
     return np.fromiter((trace(origin=orig, direction=dir_vec) for orig, dir_vec in zip(origins, directions)), dtype=float)
 
 
-def _material_reflectivity(material: object) -> float:
-    """Return a material's reflectivity for legacy dicts or dataclasses."""
-
-    if hasattr(material, "reflectivity"):
-        return float(getattr(material, "reflectivity"))
-
-    if hasattr(material, "get"):
-        value = material.get("reflectivity")  # type: ignore[call-arg]
-        if value is not None:
-            return float(value)
-
-    if isinstance(material, dict) and "reflectivity" in material:
-        return float(material["reflectivity"])
-
-    raise TypeError("Material must provide a 'reflectivity' attribute or key.")
-
-
-def simulate_rcs(mesh: trimesh.Trimesh, material: object, max_reflections: int, freq_ghz: float, az_steps: int = 360, el_steps: int = 181, max_workers: int | None = None) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+def simulate_rcs(mesh: trimesh.Trimesh, material: dict, max_reflections: int, freq_ghz: float, az_steps: int = 360, el_steps: int = 181, max_workers: int | None = None) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Simulate RCS for a mesh using a grid of incoming directions."""
     if mesh is None or not hasattr(mesh, "bounding_sphere"):
         raise ValueError("Kein gültiges 3D-Mesh geladen.")
@@ -110,7 +81,7 @@ def simulate_rcs(mesh: trimesh.Trimesh, material: object, max_reflections: int, 
     az, el, dirs = spherical_directions(az_steps, el_steps)
     origins = mesh.bounding_sphere.center + 100 * (-dirs.reshape(-1, 3))
     directions = dirs.reshape(-1, 3)
-    reflectivity = _material_reflectivity(material)
+    reflectivity = material["reflectivity"]
 
     chunk_size = 2048
     rcs_lin = np.zeros(len(directions), dtype=float)
