@@ -189,8 +189,9 @@ class RCSEngine:
     ) -> SimulationResult:
         if mesh is None:
             raise ValueError("A mesh must be provided for simulation.")
-        if not hasattr(mesh, "ray"):
-            mesh.ray = build_ray_intersector(mesh)
+        # Always build the intersector so missing optional dependencies are
+        # surfaced immediately instead of bubbling up from trimesh internals.
+        mesh.ray = build_ray_intersector(mesh)
 
         freqs = settings.frequencies()
         az = settings.azimuths()

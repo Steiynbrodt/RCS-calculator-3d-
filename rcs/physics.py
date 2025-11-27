@@ -21,9 +21,21 @@ def build_ray_intersector(mesh: trimesh.Trimesh):
 
         return RayMeshIntersector(mesh)
     except Exception:
-        from trimesh.ray.ray_triangle import RayMeshIntersector
+        try:
+            # ``ray_triangle`` relies on an R-tree accelerator. Surface this as a
+            # clear error instead of bubbling up a low-level ``ModuleNotFound``
+            # from trimesh internals so the GUI can present an actionable
+            # message.
+            import rtree  # noqa: F401
 
-        return RayMeshIntersector(mesh)
+            from trimesh.ray.ray_triangle import RayMeshIntersector
+
+            return RayMeshIntersector(mesh)
+        except ModuleNotFoundError as exc:  # pragma: no cover - environment specific
+            raise ModuleNotFoundError(
+                "Missing optional dependency 'rtree'. Install it via 'pip install rtree' "
+                "to enable ray-tracing based simulations."
+            ) from exc
 
 
 def trace_ray(mesh: trimesh.Trimesh, origin: np.ndarray, direction: np.ndarray, max_depth: int, reflectivity: float, freq_ghz: float) -> float:
