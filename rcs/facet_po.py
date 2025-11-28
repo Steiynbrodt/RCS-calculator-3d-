@@ -20,10 +20,9 @@ def facet_rcs(
     The calculation is vectorised across all look directions for efficiency.
     """
 
-    freq = max(float(frequency_hz), 1e-9)
-    wavelength = 3e8 / freq
+    wavelength = 3e8 / max(frequency_hz, 1e-9)
     area = mesh.area_faces.reshape(-1, 1)
-    normals = mesh.face_normals
+    normals = mesh.face_normals / (np.linalg.norm(mesh.face_normals, axis=1, keepdims=True) + 1e-12)
 
     dirs = np.asarray(directions, dtype=float)
     norms = np.linalg.norm(dirs, axis=1, keepdims=True)

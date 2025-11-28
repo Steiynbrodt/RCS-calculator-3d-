@@ -112,26 +112,16 @@ def _edge_visible(edge: SharpEdge, k_hat: np.ndarray, mesh: Optional[trimesh.Tri
     if mesh is None:
         return True
 
-    # Guard against degenerate bounding spheres.
-    radius = 0.0
-    try:
-        radius = float(getattr(getattr(mesh.bounding_sphere, "primitive", None), "radius", 0.0) or 0.0)
-    except Exception:
-        radius = 0.0
-    if not np.isfinite(radius) or radius <= 0:
+    radius = float(
+        getattr(getattr(getattr(mesh, "bounding_sphere", None), "primitive", None), "radius", 0.0)
+        or 0.0
+    )
+    if not np.isfinite(radius) or radius <= 0.0:
         extents = getattr(mesh, "extents", None)
         if extents is not None:
             radius = float(np.linalg.norm(extents)) / 2.0
-    if not np.isfinite(radius) or radius <= 0:
+    if not np.isfinite(radius) or radius <= 0.0:
         radius = 1.0
-
-    if not hasattr(mesh, "ray"):
-        try:
-            mesh.ray = build_ray_intersector(mesh)
-        except Exception:
-            # If the ray backend is unavailable, fall back to a permissive visibility check.
-            mesh.ray = None
-            return True
 
     origin = edge.center + k_i * (radius * 4.0 + 1.0)
     direction = -k_i

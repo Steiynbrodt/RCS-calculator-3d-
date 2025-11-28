@@ -40,8 +40,7 @@ def spherical_directions(
         ),
         axis=-1,
     )
-    norms = np.linalg.norm(dirs, axis=-1, keepdims=True)
-    dirs = dirs / (norms + 1e-12)
+    dirs /= np.linalg.norm(dirs, axis=-1, keepdims=True) + 1e-12
     return az, el, dirs
 
 
@@ -57,8 +56,7 @@ def direction_grid(azimuth_deg: np.ndarray, elevation_deg: np.ndarray) -> np.nda
         ),
         axis=-1,
     )
-    norms = np.linalg.norm(dirs, axis=-1, keepdims=True)
-    return dirs / (norms + 1e-12)
+    return dirs / (np.linalg.norm(dirs, axis=-1, keepdims=True) + 1e-12)
 
 
 def frequency_loss(freq_ghz: float, min_loss: float = 0.2) -> float:
