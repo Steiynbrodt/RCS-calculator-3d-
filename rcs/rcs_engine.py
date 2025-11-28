@@ -544,23 +544,31 @@ class RCSEngine:
 
     @staticmethod
     def _select_reflectivity(material: Material, polarization: str) -> float:
-        """Choose an effective scalar reflectivity for the desired polarization.
-
-        This is a simplified HH/VV selector. If polarization-specific values
-        are not provided the broadband ``reflectivity`` is used. Cross/Co-pol
-        flags collapse to averages rather than a full scattering matrix.
-        """
+        """Choose an effective scalar reflectivity for the desired polarization."""
 
         pol = polarization.upper()
-        refl_h = material.reflectivity_h if material.reflectivity_h is not None else material.reflectivity
-        refl_v = material.reflectivity_v if material.reflectivity_v is not None else material.reflectivity
+
+        def _get(attr: str, default: Optional[float]) -> float:
+            if hasattr(material, attr):
+                value = getattr(material, attr)
+                if value is not None:
+                    return float(value)
+            if hasattr(material, "get"):
+                value = material.get(attr)  # type: ignore[call-arg]
+                if value is not None:
+                    return float(value)
+            return float(default) if default is not None else 1.0
+
+        base_reflectivity = _get("reflectivity", 1.0)
+        refl_h = _get("reflectivity_h", base_reflectivity)
+        refl_v = _get("reflectivity_v", base_reflectivity)
 
         if pol.startswith("H"):
             return refl_h
         if pol.startswith("V"):
             return refl_v
         if "CROSS" in pol or pol.startswith("X"):
-            return 0.5 * (refl_h + refl_v) * 0.5
+            return 0.5 * (refl_h + refl_v)
         return 0.5 * (refl_h + refl_v)
 
 
