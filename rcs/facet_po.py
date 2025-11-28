@@ -126,8 +126,10 @@ def facet_rcs(
         )
 
         edge_field = 0.0 + 0.0j
-        if EDGE_DIFFRACTION_ENABLED and edge_catalog:
-            edge_field = edge_diffraction_field(edge_catalog, k_hat, k, mesh if SHADOWING_ENABLED else None)
+        if EDGE_DIFFRACTION_ENABLED and len(edge_catalog) > 0:
+            edge_field = edge_diffraction_field(
+                edge_catalog, k_hat, k, mesh if SHADOWING_ENABLED else None
+            )
 
         total_field = facet_field + edge_field + corner
         rcs[idx] = np.abs(total_field) ** 2

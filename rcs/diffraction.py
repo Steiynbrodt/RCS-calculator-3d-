@@ -139,8 +139,12 @@ def edge_diffraction_field(
 ) -> complex:
     """Sum heuristic edge diffraction contributions for a single direction."""
 
+    edge_list = list(edges) if edges is not None else []
+    if len(edge_list) == 0:
+        return 0.0 + 0.0j
+
     field = 0.0 + 0.0j
-    for edge in edges:
+    for edge in edge_list:
         if not _edge_visible(edge, k_hat, mesh):
             continue
         amp = EDGE_DIFFRACTION_GAIN * np.sqrt(max(edge.length, 1e-12))
