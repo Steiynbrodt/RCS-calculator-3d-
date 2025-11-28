@@ -225,6 +225,8 @@ class RCSEngine:
 
         distance = radius * 6.0 + 1.0
         directions = dirs.reshape(-1, 3)
+        dir_norms = np.linalg.norm(directions, axis=1, keepdims=True)
+        directions = directions / (dir_norms + 1e-12)
 
         if settings.tx_yaw_deg is not None and settings.tx_elev_deg is not None:
             tx_origin = sphere_center + distance * (
@@ -563,10 +565,16 @@ class RCSEngine:
         refl_h = _get("reflectivity_h", base_reflectivity)
         refl_v = _get("reflectivity_v", base_reflectivity)
 
+        refl_h = _get_value("reflectivity_h")
+        refl_v = _get_value("reflectivity_v")
+        refl_h = base if refl_h is None or not np.isfinite(refl_h) else refl_h
+        refl_v = base if refl_v is None or not np.isfinite(refl_v) else refl_v
+
+        pol = polarization.upper()
         if pol.startswith("H"):
-            return refl_h
+            return max(float(refl_h), 0.0)
         if pol.startswith("V"):
-            return refl_v
+            return max(float(refl_v), 0.0)
         if "CROSS" in pol or pol.startswith("X"):
             return 0.5 * (refl_h + refl_v)
         return 0.5 * (refl_h + refl_v)

@@ -24,8 +24,12 @@ def facet_rcs(
     area = mesh.area_faces.reshape(-1, 1)
     normals = mesh.face_normals / (np.linalg.norm(mesh.face_normals, axis=1, keepdims=True) + 1e-12)
 
+    dirs = np.asarray(directions, dtype=float)
+    norms = np.linalg.norm(dirs, axis=1, keepdims=True)
+    dirs = dirs / (norms + 1e-12)
+
     # Directions point from radar to target; invert to get incidence toward faces.
-    look = -directions.T  # shape (3, M)
+    look = -dirs.T  # shape (3, M)
     cos_theta = normals @ look
     cos_theta = np.clip(cos_theta, 0.0, 1.0)
 
