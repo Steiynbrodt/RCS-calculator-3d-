@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Tuple
+
 import numpy as np
 
 
@@ -23,7 +25,9 @@ def rotation_matrix(yaw: float, pitch: float, roll: float) -> np.ndarray:
     return r_yaw @ r_pitch @ r_roll
 
 
-def spherical_directions(az_steps: int, el_steps: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+def spherical_directions(
+    az_steps: int, el_steps: int
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Create azimuth/elevation grids and corresponding direction vectors."""
     az = np.linspace(0, 360, az_steps, endpoint=False)
     el = np.linspace(-90, 90, el_steps)

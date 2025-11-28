@@ -7,6 +7,7 @@ import os
 import threading
 import traceback
 from pathlib import Path
+from typing import List, Optional, Tuple
 
 import matplotlib.image as mpimg
 import matplotlib.pyplot as plt
@@ -54,11 +55,11 @@ class RadarGUI:
 
         self._build_controls()
 
-        self.mesh: trimesh.Trimesh | None = None
-        self.last_rcs: np.ndarray | None = None
-        self.last_az: np.ndarray | None = None
-        self.last_el: np.ndarray | None = None
-        self.last_nctr: tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray] | None = None
+        self.mesh: Optional[trimesh.Trimesh] = None
+        self.last_rcs: Optional[np.ndarray] = None
+        self.last_az: Optional[np.ndarray] = None
+        self.last_el: Optional[np.ndarray] = None
+        self.last_nctr: Optional[Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]] = None
 
     # ------------------------------------------------------------------
     # UI construction
@@ -183,7 +184,7 @@ class RadarGUI:
             self.file_label.config(text="Keine Datei")
 
     def toggle_live_mode(self) -> None:
-        callbacks: list[tuple[tk.Scale, str]] = [
+        callbacks: List[Tuple[tk.Scale, str]] = [
             (self.freq_scale, "<ButtonRelease-1>"),
             (self.refl_slider, "<ButtonRelease-1>"),
             (self.el_slider, "<ButtonRelease-1>"),
@@ -346,7 +347,7 @@ class RadarGUI:
 
     # ------------------------------------------------------------------
     # Export helpers
-    def export_csv(self, export_dir: Path | None = None, live: bool = False) -> None:
+    def export_csv(self, export_dir: Optional[Path] = None, live: bool = False) -> None:
         if self.last_rcs is None:
             return
         if export_dir is None and not live:
@@ -372,7 +373,7 @@ class RadarGUI:
             if not live:
                 messagebox.showerror("Fehler beim Export", f"Fehler beim Exportieren der CSV:\n{exc}")
 
-    def export_heatmap(self, export_dir: Path | None = None, live: bool = False) -> None:
+    def export_heatmap(self, export_dir: Optional[Path] = None, live: bool = False) -> None:
         if self.last_rcs is None:
             return
 

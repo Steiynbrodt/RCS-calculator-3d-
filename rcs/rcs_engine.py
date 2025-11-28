@@ -10,7 +10,8 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 import os
-from typing import Iterable, Sequence
+import traceback
+from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 import concurrent.futures
 
 import numpy as np
@@ -39,7 +40,7 @@ def to_dbsm(rcs_lin: np.ndarray) -> np.ndarray:
     return 10.0 * np.log10(np.maximum(rcs_lin, 1e-20))
 
 
-@dataclass(slots=True)
+@dataclass
 class FrequencySweep:
     """Frequency sweep definition."""
 
@@ -51,7 +52,7 @@ class FrequencySweep:
         return np.linspace(self.start_hz, self.stop_hz, self.steps)
 
 
-@dataclass(slots=True)
+@dataclass
 class SimulationSettings:
     """Parameters for an RCS simulation run."""
 
@@ -59,23 +60,23 @@ class SimulationSettings:
     polarization: str
     max_reflections: int
     method: str = "ray"  # "ray" | "facet_po"
-    engines: list["EngineMount"] = field(default_factory=list)
-    propellers: list["Propeller"] = field(default_factory=list)
-    frequency_hz: float | None = None
-    sweep: FrequencySweep | None = None
+    engines: List["EngineMount"] = field(default_factory=list)
+    propellers: List["Propeller"] = field(default_factory=list)
+    frequency_hz: Optional[float] = None
+    sweep: Optional[FrequencySweep] = None
     azimuth_start: float = 0.0
     azimuth_stop: float = 360.0
     azimuth_step: float = 5.0
     elevation_start: float = -90.0
     elevation_stop: float = 90.0
     elevation_step: float = 5.0
-    elevation_slice_deg: float | None = None
-    azimuth_slice_deg: float | None = None
+    elevation_slice_deg: Optional[float] = None
+    azimuth_slice_deg: Optional[float] = None
     target_speed_mps: float = 0.0
-    radar_profile: str | None = None
-    tx_yaw_deg: float | None = None
-    tx_elev_deg: float | None = None
-    max_workers: int | None = None
+    radar_profile: Optional[str] = None
+    tx_yaw_deg: Optional[float] = None
+    tx_elev_deg: Optional[float] = None
+    max_workers: Optional[int] = None
 
     def frequencies(self) -> np.ndarray:
         if self.frequency_hz is not None:
@@ -92,7 +93,7 @@ class SimulationSettings:
         return np.arange(self.elevation_start, self.elevation_stop + 1e-6, self.elevation_step)
 
 
-@dataclass(slots=True)
+@dataclass
 class Material:
     """Material properties used by the simplified RCS engine.
 
@@ -105,14 +106,14 @@ class Material:
     epsilon_imag: float
     conductivity: float
     reflectivity: float
-    reflectivity_h: float | None = None
-    reflectivity_v: float | None = None
+    reflectivity_h: Optional[float] = None
+    reflectivity_v: Optional[float] = None
 
     def as_dict(self) -> dict:
         return asdict(self)
 
 
-@dataclass(slots=True)
+@dataclass
 class SimulationResult:
     """Container for RCS outputs.
 
@@ -130,15 +131,15 @@ class SimulationResult:
     elevation_deg: np.ndarray
     rcs_dbsm: np.ndarray  # shape (f, el, az)
     target_speed_mps: float
-    radar_profile: str | None = None
-    doppler_hz: np.ndarray | None = None
+    radar_profile: Optional[str] = None
+    doppler_hz: Optional[np.ndarray] = None
 
-    def slice_for_elevation(self, elevation: float) -> tuple[np.ndarray, np.ndarray]:
+    def slice_for_elevation(self, elevation: float) -> Tuple[np.ndarray, np.ndarray]:
         idx = int(np.argmin(np.abs(self.elevation_deg - elevation)))
         return self.azimuth_deg, self.rcs_dbsm[:, idx, :]
 
 
-@dataclass(slots=True)
+@dataclass
 class EngineMount:
     """Simple powerplant cavity model that boosts RCS when illuminated on-axis."""
 
@@ -154,7 +155,7 @@ class EngineMount:
         return np.array([np.cos(yaw), np.sin(yaw), 0.0])
 
 
-@dataclass(slots=True)
+@dataclass
 class Propeller:
     """Parametric propeller disk representation with RPM and blade density."""
 
@@ -189,7 +190,7 @@ class RCSEngine:
         material: Material,
         settings: SimulationSettings,
         *,
-        progress: callable | None = None,
+        progress: Optional[Callable[[int], None]] = None,
     ) -> SimulationResult:
         if mesh is None:
             raise ValueError("A mesh must be provided for simulation.")
@@ -208,11 +209,15 @@ class RCSEngine:
         sphere_center = mesh.bounding_sphere.center
 
         if settings.tx_yaw_deg is not None and settings.tx_elev_deg is not None:
-            tx_dir = self._direction_from_angles(settings.tx_yaw_deg, settings.tx_elev_deg)
-            tx_origin = mesh.bounding_sphere.center + distance * (-tx_dir)
+            tx_origin = sphere_center + distance * (
+                -self._direction_from_angles(settings.tx_yaw_deg, settings.tx_elev_deg)
+            )
+            origin_center = tx_origin
+            origin_distance = 0.0
         else:
-            tx_dir = None
             tx_origin = None
+            origin_center = sphere_center
+            origin_distance = distance
 
         bundle_offsets = np.linspace(-0.6, 0.6, 3) * mesh.bounding_sphere.primitive.radius
         bundle_grid = np.array([(ox, oy) for ox in bundle_offsets for oy in bundle_offsets])
@@ -223,64 +228,68 @@ class RCSEngine:
         edges = build_sharp_edges(mesh)
         reflectivity = self._select_reflectivity(material, settings.polarization)
 
-        for fi, freq_hz in enumerate(freqs):
-            if self._stop_requested:
-                break
-            freq_ghz = freq_hz / 1e9
-            wavelength = self._compute_wavelength(freq_hz)
-            k = 2 * np.pi / wavelength
-            if doppler_all is not None:
-                doppler_all[fi] = 2 * settings.target_speed_mps * freq_hz / 3e8
-            loss_per_reflection = frequency_loss(freq_ghz)
-            if settings.method == "facet_po":
-                rcs_lin = facet_rcs(mesh, reflectivity, freq_hz, directions)
-            else:
-                rcs_lin = np.zeros(len(directions), dtype=float)
-                workers = settings.max_workers or (os.cpu_count() or 1)
-                chunk = 64
-                stop_flag = lambda: self._stop_requested  # noqa: E731
-                with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
-                    futures: dict[concurrent.futures.Future[np.ndarray], slice] = {}
-                    for start in range(0, len(directions), chunk):
-                        end = min(len(directions), start + chunk)
-                        dir_chunk = directions[start:end]
-                        futures[
-                            executor.submit(
-                                self._trace_direction_block,
-                                mesh,
-                                dir_chunk,
-                                bundle_grid,
-                                settings.max_reflections,
-                                reflectivity,
-                                loss_per_reflection,
-                                k,
-                                edges,
-                                centers,
-                                stop_flag,
-                                sphere_center,
-                                distance,
-                            )
-                        ] = slice(start, end)
-
-                    try:
-                        for fut in concurrent.futures.as_completed(futures):
-                            rcs_lin[futures[fut]] = fut.result()
-                            if self._stop_requested:
-                                break
-                    finally:
-                        executor.shutdown(cancel_futures=True)
-
+        try:
+            for fi, freq_hz in enumerate(freqs):
                 if self._stop_requested:
                     break
+                freq_ghz = freq_hz / 1e9
+                wavelength = self._compute_wavelength(freq_hz)
+                k = 2 * np.pi / wavelength
+                if doppler_all is not None:
+                    doppler_all[fi] = 2 * settings.target_speed_mps * freq_hz / 3e8
+                loss_per_reflection = frequency_loss(freq_ghz)
+                if settings.method == "facet_po":
+                    rcs_lin = facet_rcs(mesh, reflectivity, freq_hz, directions)
+                else:
+                    rcs_lin = np.zeros(len(directions), dtype=float)
+                    workers = settings.max_workers or (os.cpu_count() or 1)
+                    chunk = max(64, len(directions) // max(workers, 1) // 2)
+                    ray_intersector = mesh.ray
+                    area_faces = mesh.area_faces
+                    face_normals = mesh.face_normals
+                    stop_flag = lambda: self._stop_requested  # noqa: E731
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
+                        futures: Dict[concurrent.futures.Future[np.ndarray], slice] = {}
+                        for start in range(0, len(directions), chunk):
+                            end = min(len(directions), start + chunk)
+                            dir_chunk = directions[start:end]
+                            futures[
+                                executor.submit(
+                                    self._trace_direction_block,
+                                    mesh,
+                                    dir_chunk,
+                                    bundle_grid,
+                                    settings.max_reflections,
+                                    reflectivity,
+                                    loss_per_reflection,
+                                    k,
+                                    edges,
+                                    centers,
+                                    stop_flag,
+                                    origin_center,
+                                    origin_distance,
+                                    ray_intersector,
+                                    area_faces,
+                                    face_normals,
+                                )
+                            ] = slice(start, end)
 
-            rcs_lin = self._apply_powerplant_signatures(directions, rcs_lin, reflectivity, settings)
+                        self._drain_trace_futures(futures, rcs_lin)
 
-            rcs_db = 10 * np.log10(rcs_lin.reshape(len(el), len(az)))
-            rcs_all[fi] = rcs_db
-            if progress:
-                progress(int((fi + 1) / len(freqs) * 100))
+                    if self._stop_requested:
+                        break
 
-        self._stop_requested = False
+                rcs_lin = self._apply_powerplant_signatures(
+                    directions, rcs_lin, reflectivity, settings
+                )
+
+                rcs_db = 10 * np.log10(rcs_lin.reshape(len(el), len(az)))
+                rcs_all[fi] = rcs_db
+                if progress:
+                    progress(int((fi + 1) / len(freqs) * 100))
+        finally:
+            self._stop_requested = False
+
         return SimulationResult(
             band=settings.band,
             polarization=settings.polarization,
@@ -292,6 +301,40 @@ class RCSEngine:
             radar_profile=settings.radar_profile,
             doppler_hz=doppler_all,
         )
+
+    # ------------------------------------------------------------------
+    def _drain_trace_futures(
+        self,
+        futures: Dict[concurrent.futures.Future[np.ndarray], slice],
+        rcs_lin: np.ndarray,
+    ) -> None:
+        """Collect results from ray-tracing workers with clear failure context."""
+
+        pending = set(futures.keys())
+        try:
+            for fut in concurrent.futures.as_completed(pending):
+                pending.remove(fut)
+                sl = futures[fut]
+                try:
+                    rcs_lin[sl] = fut.result()
+                except concurrent.futures.CancelledError as exc:
+                    raise RuntimeError(
+                        "Ray tracing was cancelled before completion. "
+                        "Ensure ray dependencies are installed or retry with the 'facet_po' method."
+                    ) from exc
+                except Exception as exc:  # pragma: no cover - defensive guard for worker failures
+                    formatted = "".join(traceback.format_exception(exc)).strip()
+                    raise RuntimeError(
+                        "Ray tracing failed during batch execution. "
+                        "Ensure ray dependencies are installed or switch to the 'facet_po' method. "
+                        f"Worker slice {sl} error: {exc}.\n{formatted}"
+                    ) from exc
+                if self._stop_requested:
+                    break
+        finally:
+            if self._stop_requested:
+                for fut in pending:
+                    fut.cancel()
 
     # ------------------------------------------------------------------
     def _apply_powerplant_signatures(
@@ -342,6 +385,9 @@ class RCSEngine:
         stop_cb,
         origin_center: np.ndarray,
         origin_distance: float,
+        ray_intersector,
+        area_faces: np.ndarray,
+        face_normals: np.ndarray,
     ) -> np.ndarray:
         """Trace a batch of directions and return their linear RCS contributions."""
 
@@ -353,38 +399,46 @@ class RCSEngine:
             origin = origin_center - origin_distance * direction
             specular_sum = 0.0j
             basis_u, basis_v = self._orthonormal_basis(direction)
-            for ox, oy in bundle_grid:
-                energy = 1.0
-                path_length = 0.0
-                ray_origin = origin + ox * basis_u + oy * basis_v
-                ray_dir = direction
-                for _ in range(max_reflections):
-                    locs, _, tri_idx = mesh.ray.intersects_location(
-                        np.array([ray_origin]), np.array([ray_dir]), multiple_hits=False
-                    )
-                    if len(locs) == 0:
-                        break
-                    hit = locs[0]
-                    face_index = tri_idx[0]
-                    normal = mesh.face_normals[face_index]
-                    reflect_dir = ray_dir - 2 * np.dot(ray_dir, normal) * normal
-                    reflect_dir /= np.linalg.norm(reflect_dir)
+            bundle_origins = origin + bundle_grid[:, 0:1] * basis_u + bundle_grid[:, 1:2] * basis_v
+            try:
+                for ray_origin in bundle_origins:
+                    energy = 1.0
+                    path_length = 0.0
+                    ray_dir = direction
+                    for _ in range(max_reflections):
+                        try:
+                            locs, _, tri_idx = ray_intersector.intersects_location(
+                                ray_origin[np.newaxis, :], ray_dir[np.newaxis, :], multiple_hits=False
+                            )
+                        except Exception:
+                            # If the backend fails (e.g., missing optional acceleration modules),
+                            # treat this path as non-contributing instead of crashing the worker.
+                            break
+                        if len(locs) == 0:
+                            break
+                        hit = locs[0]
+                        face_index = tri_idx[0]
+                        normal = face_normals[face_index]
+                        reflect_dir = ray_dir - 2 * np.dot(ray_dir, normal) * normal
+                        reflect_dir /= np.linalg.norm(reflect_dir)
 
-                    path_length += float(np.linalg.norm(hit - ray_origin))
+                        path_length += float(np.linalg.norm(hit - ray_origin))
 
-                    alignment = np.dot(reflect_dir, -ray_dir)
-                    if alignment > 0.95:
-                        area_term = mesh.area_faces[face_index] * (np.dot(normal, -ray_dir)) ** 2
-                        total_path = self._path_to_receiver(path_length, hit, origin, direction)
-                        phase = self._monostatic_phase(k, total_path)
-                        specular_sum += energy * area_term * np.exp(1j * phase)
+                        alignment = np.dot(reflect_dir, -ray_dir)
+                        if alignment > 0.95:
+                            area_term = area_faces[face_index] * (np.dot(normal, -ray_dir)) ** 2
+                            total_path = self._path_to_receiver(path_length, hit, origin, direction)
+                            phase = self._monostatic_phase(k, total_path)
+                            specular_sum += energy * area_term * np.exp(1j * phase)
 
-                    energy *= reflectivity * loss_per_reflection
-                    if energy < MIN_ENERGY:
-                        break
+                        energy *= reflectivity * loss_per_reflection
+                        if energy < MIN_ENERGY:
+                            break
 
-                    ray_origin = hit + 1e-4 * reflect_dir
-                    ray_dir = reflect_dir
+                        ray_origin = hit + 1e-4 * reflect_dir
+                        ray_dir = reflect_dir
+            except Exception as exc:  # pragma: no cover - defensive guard for worker failures
+                raise RuntimeError(f"Ray tracing worker failed at direction index {idx}: {exc}") from exc
 
             k_hat = direction / (np.linalg.norm(direction) + 1e-12)
             illum_mask = (mesh.face_normals @ -k_hat) > 0.0
@@ -406,7 +460,7 @@ class RCSEngine:
         return results
 
     @staticmethod
-    def _orthonormal_basis(direction: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    def _orthonormal_basis(direction: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         """Return two unit vectors spanning the plane perpendicular to *direction*."""
 
         w = direction / (np.linalg.norm(direction) + 1e-12)

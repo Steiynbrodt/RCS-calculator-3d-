@@ -5,24 +5,24 @@ from __future__ import annotations
 from dataclasses import dataclass, asdict
 import json
 from pathlib import Path
-from typing import Iterable, List
+from typing import Dict, Iterable, List, Optional, Tuple, Union
 
 import numpy as np
 
 from .rcs_engine import SimulationResult
 
 
-@dataclass(slots=True)
+@dataclass
 class SignatureTemplate:
     name: str
     target_class: str
     band: str
-    frequencies_hz: list[float]
-    azimuth_deg: list[float]
-    elevation_deg: list[float]
+    frequencies_hz: List[float]
+    azimuth_deg: List[float]
+    elevation_deg: List[float]
     polarization: str
-    rcs_dbsm: list[list[list[float]]]
-    meta: dict
+    rcs_dbsm: List[List[List[float]]]
+    meta: Dict
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), indent=2)
@@ -51,7 +51,7 @@ class TemplateLibrary:
     directory is read-only.
     """
 
-    def __init__(self, directory: str | Path | None = None) -> None:
+    def __init__(self, directory: Union[str, Path, None] = None) -> None:
         preferred = Path(directory) if directory else Path.home() / ".rcs" / "templates"
         self.directory = self._ensure_directory(preferred, directory_provided=directory is not None)
 
@@ -67,13 +67,13 @@ class TemplateLibrary:
             fallback.mkdir(parents=True, exist_ok=True)
             return fallback
 
-    def list_templates(self) -> list[Path]:
+    def list_templates(self) -> List[Path]:
         return sorted(self.directory.glob("*.json"))
 
     def load_template(self, path: Path) -> SignatureTemplate:
         return SignatureTemplate.from_json(path.read_text())
 
-    def save_template(self, template: SignatureTemplate, *, filename: str | None = None) -> Path:
+    def save_template(self, template: SignatureTemplate, *, filename: Optional[str] = None) -> Path:
         fname = filename or f"{template.name}.json"
         path = self.directory / fname
         path.write_text(template.to_json())
@@ -84,7 +84,7 @@ class TemplateLibrary:
         result: SimulationResult,
         name: str,
         target_class: str,
-        meta: dict | None = None,
+        meta: Optional[Dict] = None,
     ) -> SignatureTemplate:
         meta = meta or {}
         meta.setdefault("radar_profile", result.radar_profile)
@@ -101,8 +101,8 @@ class TemplateLibrary:
             meta=meta,
         )
 
-    def match(self, result: SimulationResult) -> list[tuple[SignatureTemplate, float]]:
-        matches: list[tuple[SignatureTemplate, float]] = []
+    def match(self, result: SimulationResult) -> List[Tuple[SignatureTemplate, float]]:
+        matches: List[Tuple[SignatureTemplate, float]] = []
         for path in self.list_templates():
             template = self.load_template(path)
             if template.band != result.band:

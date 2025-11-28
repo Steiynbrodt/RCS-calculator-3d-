@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import numpy as np
 import trimesh
+from typing import Dict, List, Optional, Tuple, Union
 
 from .math_utils import rotation_matrix
 
@@ -71,10 +72,19 @@ def simulate_nctr_signature(
     pulses: int = 256,
     window: int = 64,
     hop: int = 16,
-    rotating_groups: dict[str, dict] | None = None,
+    rotating_groups: Optional[Dict[str, dict]] = None,
     return_range_doppler: bool = False,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray] | tuple[
-    np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray
+) -> Union[
+    Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray],
+    Tuple[
+        np.ndarray,
+        np.ndarray,
+        np.ndarray,
+        np.ndarray,
+        np.ndarray,
+        np.ndarray,
+        np.ndarray,
+    ],
 ]:
     """Generate a synthetic micro-Doppler (and optional range–Doppler) signature.
 
@@ -199,8 +209,8 @@ def simulate_nctr_signature(
     signal += noise
 
     window_func = np.hanning(window)
-    specs: list[np.ndarray] = []
-    times: list[float] = []
+    specs: List[np.ndarray] = []
+    times: List[float] = []
 
     for start in range(0, pulses - window + 1, hop):
         segment = signal[start : start + window] * window_func
@@ -216,9 +226,9 @@ def simulate_nctr_signature(
     if not return_range_doppler:
         return np.array(times), freqs, spectrogram, envelope
 
-    range_specs: list[np.ndarray] = []
+    range_specs: List[np.ndarray] = []
     for rng_series in range_hist:
-        bin_segments: list[np.ndarray] = []
+        bin_segments: List[np.ndarray] = []
         for start in range(0, pulses - window + 1, hop):
             segment = rng_series[start : start + window] * window_func
             fft_vals = np.fft.fftshift(np.fft.fft(segment))

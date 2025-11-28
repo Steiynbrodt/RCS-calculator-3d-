@@ -12,6 +12,7 @@ import dataclasses
 
 import numpy as np
 import trimesh
+from typing import Dict, Optional
 
 from .facet_po import facet_rcs
 from .rcs_engine import Material, RCSEngine, SimulationSettings
@@ -47,7 +48,7 @@ def _trihedral(size: float = 1.0, thickness: float = 0.02) -> trimesh.Trimesh:
 
 def _az_sweep(
     mesh: trimesh.Trimesh, freq_hz: float, elevation_deg: float = 0.0, az_step: float = 2.0
-) -> dict[str, np.ndarray]:
+) -> Dict[str, np.ndarray]:
     """Compute azimuth RCS cuts for both ray-trace and facet-PO methods."""
 
     engine = RCSEngine()
@@ -77,7 +78,9 @@ def _az_sweep(
     }
 
 
-def canonical_reflector_sweeps(freq_hz: float = 10e9, elevation_deg: float = 0.0) -> dict[str, dict[str, np.ndarray]]:
+def canonical_reflector_sweeps(
+    freq_hz: float = 10e9, elevation_deg: float = 0.0
+) -> Dict[str, Dict[str, np.ndarray]]:
     """Generate azimuth sweeps for cube, dihedral, and trihedral reflectors."""
 
     cube = _cube()
@@ -91,7 +94,7 @@ def canonical_reflector_sweeps(freq_hz: float = 10e9, elevation_deg: float = 0.0
     }
 
 
-def compare_flat_plate(size: float = 1.0, freq_hz: float = 10e9) -> dict[str, np.ndarray]:
+def compare_flat_plate(size: float = 1.0, freq_hz: float = 10e9) -> Dict[str, np.ndarray]:
     """Compare ray and facet-PO responses for a PEC flat plate.
 
     Returns a dictionary with azimuth angles in degrees and RCS in dBsm for each
@@ -135,7 +138,7 @@ def compare_flat_plate(size: float = 1.0, freq_hz: float = 10e9) -> dict[str, np
     return {"az_deg": az, "ray_dbsm": ray_db, "facet_dbsm": facet_db}
 
 
-def compare_box(freq_hz: float = 10e9) -> dict[str, np.ndarray]:
+def compare_box(freq_hz: float = 10e9) -> Dict[str, np.ndarray]:
     """Contrast ray and facet-PO patterns for a simple PEC cube."""
 
     mesh = trimesh.creation.box(extents=(1.0, 1.0, 1.0))
@@ -164,7 +167,7 @@ def compare_box(freq_hz: float = 10e9) -> dict[str, np.ndarray]:
     }
 
 
-def compare_nctr_rotors(mesh: trimesh.Trimesh | None = None) -> dict[str, np.ndarray]:
+def compare_nctr_rotors(mesh: Optional[trimesh.Trimesh] = None) -> Dict[str, np.ndarray]:
     """Compare whole-body spin against a rotating sub-component."""
 
     if mesh is None:
