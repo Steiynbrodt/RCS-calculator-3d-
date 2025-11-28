@@ -228,74 +228,18 @@ class RCSEngine:
         edges = build_sharp_edges(mesh)
         reflectivity = self._select_reflectivity(material, settings.polarization)
 
-        for fi, freq_hz in enumerate(freqs):
-            if self._stop_requested:
-                break
-            freq_ghz = freq_hz / 1e9
-            wavelength = self._compute_wavelength(freq_hz)
-            k = 2 * np.pi / wavelength
-            if doppler_all is not None:
-                doppler_all[fi] = 2 * settings.target_speed_mps * freq_hz / 3e8
-            loss_per_reflection = frequency_loss(freq_ghz)
-            if settings.method == "facet_po":
-                rcs_lin = facet_rcs(mesh, reflectivity, freq_hz, directions)
-            else:
-                rcs_lin = np.zeros(len(directions), dtype=float)
-                workers = settings.max_workers or (os.cpu_count() or 1)
-                chunk = max(64, len(directions) // max(workers, 1) // 2)
-                ray_intersector = mesh.ray
-                area_faces = mesh.area_faces
-                face_normals = mesh.face_normals
-                stop_flag = lambda: self._stop_requested  # noqa: E731
-                with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
-                    futures: dict[concurrent.futures.Future[np.ndarray], slice] = {}
-                    for start in range(0, len(directions), chunk):
-                        end = min(len(directions), start + chunk)
-                        dir_chunk = directions[start:end]
-                        futures[
-                            executor.submit(
-                                self._trace_direction_block,
-                                mesh,
-                                dir_chunk,
-                                bundle_grid,
-                                settings.max_reflections,
-                                reflectivity,
-                                loss_per_reflection,
-                                k,
-                                edges,
-                                centers,
-                                stop_flag,
-                                origin_center,
-                                origin_distance,
-                                ray_intersector,
-                                area_faces,
-                                face_normals,
-                            )
-                        ] = slice(start, end)
-
-                    try:
-                        for fut in concurrent.futures.as_completed(futures):
-                            try:
-                                rcs_lin[futures[fut]] = fut.result()
-                            except Exception as exc:  # pragma: no cover - defensive guard for worker failures
-                                executor.shutdown(cancel_futures=True)
-                                raise RuntimeError(
-                                    "Ray tracing failed during batch execution. "
-                                    "Ensure ray dependencies are installed or switch to the 'facet_po' method."
-                                ) from exc
-                            if self._stop_requested:
-                                break
-                    finally:
-                        executor.shutdown(cancel_futures=True)
-
+        try:
+            for fi, freq_hz in enumerate(freqs):
                 if self._stop_requested:
                     break
+
                 freq_ghz = freq_hz / 1e9
                 wavelength = self._compute_wavelength(freq_hz)
                 k = 2 * np.pi / wavelength
                 if doppler_all is not None:
                     doppler_all[fi] = 2 * settings.target_speed_mps * freq_hz / 3e8
                 loss_per_reflection = frequency_loss(freq_ghz)
+
                 if settings.method == "facet_po":
                     rcs_lin = facet_rcs(mesh, reflectivity, freq_hz, directions)
                 else:
