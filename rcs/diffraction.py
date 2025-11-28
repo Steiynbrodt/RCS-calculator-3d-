@@ -43,8 +43,8 @@ class SharpEdge:
     center: np.ndarray
     direction: np.ndarray
     length: float
-    normals: tuple[np.ndarray, np.ndarray]
-    faces: tuple[int, int]
+    normals: Tuple[np.ndarray, np.ndarray]
+    faces: Tuple[int, int]
 
     @property
     def unit(self) -> np.ndarray:
@@ -54,13 +54,13 @@ class SharpEdge:
 # ---------------------------------------------------------------------------
 # Edge utilities
 
-def build_sharp_edges(mesh: trimesh.Trimesh) -> list[SharpEdge]:
+def build_sharp_edges(mesh: trimesh.Trimesh) -> List[SharpEdge]:
     """Extract sharp edges suitable for heuristic diffraction contributions."""
 
     if mesh.edges is None or len(mesh.edges) == 0:
         return []
 
-    edges: list[SharpEdge] = []
+    edges: List[SharpEdge] = []
     angles = mesh.face_adjacency_angles
     adjacency = mesh.face_adjacency
     vertices = mesh.vertices

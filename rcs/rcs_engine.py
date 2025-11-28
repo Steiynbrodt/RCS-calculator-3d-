@@ -93,7 +93,7 @@ class SimulationSettings:
         return np.arange(self.elevation_start, self.elevation_stop + 1e-6, self.elevation_step)
 
 
-@dataclass(slots=True)
+@dataclass
 class Material:
     """Material properties used by the simplified RCS engine.
 
@@ -113,7 +113,7 @@ class Material:
         return asdict(self)
 
 
-@dataclass(slots=True)
+@dataclass
 class SimulationResult:
     """Container for RCS outputs.
 
@@ -134,12 +134,12 @@ class SimulationResult:
     radar_profile: Optional[str] = None
     doppler_hz: Optional[np.ndarray] = None
 
-    def slice_for_elevation(self, elevation: float) -> tuple[np.ndarray, np.ndarray]:
+    def slice_for_elevation(self, elevation: float) -> Tuple[np.ndarray, np.ndarray]:
         idx = int(np.argmin(np.abs(self.elevation_deg - elevation)))
         return self.azimuth_deg, self.rcs_dbsm[:, idx, :]
 
 
-@dataclass(slots=True)
+@dataclass
 class EngineMount:
     """Simple powerplant cavity model that boosts RCS when illuminated on-axis."""
 
@@ -155,7 +155,7 @@ class EngineMount:
         return np.array([np.cos(yaw), np.sin(yaw), 0.0])
 
 
-@dataclass(slots=True)
+@dataclass
 class Propeller:
     """Parametric propeller disk representation with RPM and blade density."""
 
@@ -515,7 +515,7 @@ class RCSEngine:
         return results
 
     @staticmethod
-    def _orthonormal_basis(direction: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    def _orthonormal_basis(direction: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         """Return two unit vectors spanning the plane perpendicular to *direction*."""
 
         w = direction / (np.linalg.norm(direction) + 1e-12)

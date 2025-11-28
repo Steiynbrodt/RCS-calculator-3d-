@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -81,8 +81,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.mesh: Optional[trimesh.Trimesh] = None
         self.mesh_path: Optional[Path] = None
         self.result: Optional[SimulationResult] = None
-        self.engines: list[EngineMount] = []
-        self.propellers: list[Propeller] = []
+        self.engines: List[EngineMount] = []
+        self.propellers: List[Propeller] = []
 
         self._build_ui()
         self._connect_actions()

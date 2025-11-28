@@ -163,7 +163,7 @@ def robust_freq_sweep(mesh: trimesh.Trimesh, material: dict, max_reflections: in
         return
 
     freqs = np.linspace(1, 35, 30)
-    values: list[float] = []
+    values: List[float] = []
 
     for f in freqs:
         try:

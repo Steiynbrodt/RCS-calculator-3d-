@@ -209,8 +209,8 @@ def simulate_nctr_signature(
     signal += noise
 
     window_func = np.hanning(window)
-    specs: list[np.ndarray] = []
-    times: list[float] = []
+    specs: List[np.ndarray] = []
+    times: List[float] = []
 
     for start in range(0, pulses - window + 1, hop):
         segment = signal[start : start + window] * window_func
@@ -226,9 +226,9 @@ def simulate_nctr_signature(
     if not return_range_doppler:
         return np.array(times), freqs, spectrogram, envelope
 
-    range_specs: list[np.ndarray] = []
+    range_specs: List[np.ndarray] = []
     for rng_series in range_hist:
-        bin_segments: list[np.ndarray] = []
+        bin_segments: List[np.ndarray] = []
         for start in range(0, pulses - window + 1, hop):
             segment = rng_series[start : start + window] * window_func
             fft_vals = np.fft.fftshift(np.fft.fft(segment))

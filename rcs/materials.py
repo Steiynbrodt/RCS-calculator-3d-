@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Dict, List
 
 from .rcs_engine import Material
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class _LegacyMaterial:
     sigma: float
     eps_r: float
@@ -15,7 +16,7 @@ class _LegacyMaterial:
     reflectivity: float
 
 
-MATERIAL_DB: dict[str, _LegacyMaterial] = {
+MATERIAL_DB: Dict[str, _LegacyMaterial] = {
     "Aluminium": _LegacyMaterial(sigma=3.5e7, eps_r=1.0, tan_delta=0.0, reflectivity=0.99),
     "Stahl": _LegacyMaterial(sigma=1e7, eps_r=1.0, tan_delta=0.0, reflectivity=0.98),
     "Carbon": _LegacyMaterial(sigma=1e4, eps_r=5.0, tan_delta=0.05, reflectivity=0.6),
@@ -43,7 +44,7 @@ class MaterialDatabase:
     """Simple material store with editable entries."""
 
     def __init__(self) -> None:
-        self.materials: dict[str, Material] = {
+        self.materials: Dict[str, Material] = {
             name: self._convert_legacy(name, legacy)
             for name, legacy in MATERIAL_DB.items()
         }
@@ -60,10 +61,10 @@ class MaterialDatabase:
         )
 
     # Public API used by the GUI
-    def names(self) -> list[str]:
+    def names(self) -> List[str]:
         return list(self.materials.keys())
 
-    def as_list(self) -> list[Material]:
+    def as_list(self) -> List[Material]:
         return list(self.materials.values())
 
     def get(self, name: str) -> Material:

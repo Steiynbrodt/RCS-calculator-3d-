@@ -184,7 +184,7 @@ class RadarGUI:
             self.file_label.config(text="Keine Datei")
 
     def toggle_live_mode(self) -> None:
-        callbacks: list[tuple[tk.Scale, str]] = [
+        callbacks: List[Tuple[tk.Scale, str]] = [
             (self.freq_scale, "<ButtonRelease-1>"),
             (self.refl_slider, "<ButtonRelease-1>"),
             (self.el_slider, "<ButtonRelease-1>"),
