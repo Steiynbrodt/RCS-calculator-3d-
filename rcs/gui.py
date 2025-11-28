@@ -7,7 +7,7 @@ import os
 import threading
 import traceback
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Optional, Tuple
 
 import matplotlib.image as mpimg
 import matplotlib.pyplot as plt
