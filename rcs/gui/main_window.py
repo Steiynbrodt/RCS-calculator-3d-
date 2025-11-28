@@ -3,20 +3,23 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Mapping, cast  # ← added Mapping, cast
+
+import matplotlib
+matplotlib.use("Qt5Agg")  # ← force PyQt5 backend
 
 import matplotlib.pyplot as plt
 import numpy as np
 import trimesh
-from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg
+from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg  # ← Qt5 backend  # type: ignore[reportPrivateImportUsage]
 from matplotlib.figure import Figure
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 from PyQt5 import QtCore, QtWidgets
 
-from ..materials import MaterialDatabase
-from ..project_io import ProjectState, load_project, save_project
-from ..radar_profiles import RADAR_PROFILES, RadarProfile
-from ..rcs_engine import (
+from rcs.materials import MaterialDatabase
+from rcs.project_io import ProjectState, load_project, save_project
+from rcs.radar_profiles import RADAR_PROFILES, RadarProfile
+from rcs.rcs_engine import (
     BAND_DEFAULTS,
     EngineMount,
     FrequencySweep,
@@ -26,7 +29,19 @@ from ..rcs_engine import (
     SimulationResult,
     SimulationSettings,
 )
-from ..templates import TemplateLibrary
+from rcs.templates import TemplateLibrary
+
+def _update_band_defaults(self) -> None:
+    # Help Pylance by making the type explicit
+    bands: Mapping[str, tuple[float, float]] = cast(
+        Mapping[str, tuple[float, float]],
+        BAND_DEFAULTS,
+    )
+    band = self.band_combo.currentText()
+    start, stop = bands.get(band, bands["S"])
+    self.single_freq.setValue((start + stop) / 2 / 1e9)
+    self.sweep_start.setValue(start / 1e9)
+    self.sweep_stop.setValue(stop / 1e9)
 
 
 class SimulationWorker(QtCore.QThread):
@@ -50,7 +65,12 @@ class SimulationWorker(QtCore.QThread):
     def run(self) -> None:  # noqa: D401
         try:
             self.engine.reset()
-            result = self.engine.compute(self.mesh, self.material, self.settings, progress=self.progress.emit)
+            result = self.engine.compute(
+                self.mesh,
+                self.material,
+                self.settings,
+                progress=self.progress.emit,
+            )
             self.finished.emit(result)
         except Exception as exc:  # noqa: BLE001
             self.failed.emit(str(exc))
@@ -179,7 +199,9 @@ class MainWindow(QtWidgets.QMainWindow):
 
         # Templates tab
         self.templates_table = QtWidgets.QTableWidget(0, 4)
-        self.templates_table.setHorizontalHeaderLabels(["Name", "Class", "Band", "Score"])
+        self.templates_table.setHorizontalHeaderLabels(
+            ["Name", "Class", "Band", "Score"]
+        )
         template_tab = QtWidgets.QWidget()
         template_layout = QtWidgets.QVBoxLayout(template_tab)
         btns = QtWidgets.QHBoxLayout()
@@ -204,7 +226,10 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _populate_radar_presets(self) -> None:
         self.radar_combo.clear()
-        for name in sorted(RADAR_PROFILES.keys()):
+        profiles: Mapping[str, RadarProfile] = cast(
+            Mapping[str, RadarProfile], RADAR_PROFILES
+        )
+        for name in sorted(profiles.keys()):
             self.radar_combo.addItem(name)
 
     def _build_controls(self) -> QtWidgets.QWidget:
@@ -320,8 +345,12 @@ class MainWindow(QtWidgets.QMainWindow):
         powerplant_group = QtWidgets.QGroupBox("Powerplant / propulsor modeling")
         pp_layout = QtWidgets.QVBoxLayout(powerplant_group)
         self.engine_table = QtWidgets.QTableWidget(0, 6)
-        self.engine_table.setHorizontalHeaderLabels(["X", "Y", "Z", "Radius (m)", "Length (m)", "Yaw (deg)"])
-        self.engine_table.horizontalHeader().setStretchLastSection(True)
+        self.engine_table.setHorizontalHeaderLabels(
+            ["X", "Y", "Z", "Radius (m)", "Length (m)", "Yaw (deg)"]
+        )
+        header = self.engine_table.horizontalHeader()
+        if header is not None:
+            header.setStretchLastSection(True)
         pp_layout.addWidget(QtWidgets.QLabel("Engines / intakes"))
         pp_layout.addWidget(self.engine_table)
         engine_btns = QtWidgets.QHBoxLayout()
@@ -335,8 +364,12 @@ class MainWindow(QtWidgets.QMainWindow):
         pp_layout.addLayout(engine_btns)
 
         self.prop_table = QtWidgets.QTableWidget(0, 6)
-        self.prop_table.setHorizontalHeaderLabels(["X", "Y", "Z", "Radius (m)", "Blades", "RPM"])
-        self.prop_table.horizontalHeader().setStretchLastSection(True)
+        self.prop_table.setHorizontalHeaderLabels(
+            ["X", "Y", "Z", "Radius (m)", "Blades", "RPM"]
+        )
+        prop_header = self.prop_table.horizontalHeader()
+        if prop_header is not None:
+            prop_header.setStretchLastSection(True)
         pp_layout.addWidget(QtWidgets.QLabel("Propellers"))
         pp_layout.addWidget(self.prop_table)
         prop_btns = QtWidgets.QHBoxLayout()
@@ -385,39 +418,63 @@ class MainWindow(QtWidgets.QMainWindow):
         self.remove_prop_btn.clicked.connect(self._remove_prop)
 
         # Menu bar
-        file_menu = self.menuBar().addMenu("File")
-        open_action = file_menu.addAction("Open STL")
-        save_project_action = file_menu.addAction("Save Project")
-        load_project_action = file_menu.addAction("Load Project")
-        export_csv_action = file_menu.addAction("Export CSV")
-        export_plot_action = file_menu.addAction("Export Plots")
-        exit_action = file_menu.addAction("Exit")
+        menu_bar = self.menuBar()
+        if menu_bar is not None:
+            file_menu = menu_bar.addMenu("File")
+            if file_menu is not None:
+                open_action = file_menu.addAction("Open STL")
+                save_project_action = file_menu.addAction("Save Project")
+                load_project_action = file_menu.addAction("Load Project")
+                export_csv_action = file_menu.addAction("Export CSV")
+                export_plot_action = file_menu.addAction("Export Plots")
+                exit_action = file_menu.addAction("Exit")
 
-        materials_menu = self.menuBar().addMenu("Materials")
-        edit_materials_action = materials_menu.addAction("Edit materials")
+                if open_action is not None:
+                    open_action.triggered.connect(self._open_mesh)
+                if save_project_action is not None:
+                    save_project_action.triggered.connect(self._save_project)
+                if load_project_action is not None:
+                    load_project_action.triggered.connect(self._load_project)
+                if export_csv_action is not None:
+                    export_csv_action.triggered.connect(self._export_csv)
+            materials_menu = menu_bar.addMenu("Materials")
+            if materials_menu is not None:
+                edit_materials_action = materials_menu.addAction("Edit materials")
+                if edit_materials_action is not None:
+                    edit_materials_action.triggered.connect(self._edit_materials)
 
-        templates_menu = self.menuBar().addMenu("Templates / NCTR")
-        templates_menu.addAction(self.create_template_btn.text(), self._create_template)
-        templates_menu.addAction(self.match_template_btn.text(), self._match_templates)
+            if export_csv_action is not None:
+                export_csv_action.triggered.connect(self._export_csv)
+            if export_plot_action is not None:
+                export_plot_action.triggered.connect(self._export_plots)
+            if exit_action is not None:
+                exit_action.triggered.connect(self._on_exit)
 
-        open_action.triggered.connect(self._open_mesh)
-        save_project_action.triggered.connect(self._save_project)
-        load_project_action.triggered.connect(self._load_project)
-        export_csv_action.triggered.connect(self._export_csv)
-        export_plot_action.triggered.connect(self._export_plots)
-        exit_action.triggered.connect(self.close)
-        edit_materials_action.triggered.connect(self._edit_materials)
+            templates_menu = menu_bar.addMenu("Templates / NCTR")
+            if templates_menu is not None:
+                templates_menu.addAction(
+                    self.create_template_btn.text(), self._create_template
+                )
+                templates_menu.addAction(
+                    self.match_template_btn.text(), self._match_templates
+                )
 
     # ------------------------------------------------------------------
     def _update_band_defaults(self) -> None:
+        bands: Mapping[str, tuple[float, float]] = cast(
+            Mapping[str, tuple[float, float]], BAND_DEFAULTS
+        )
         band = self.band_combo.currentText()
-        start, stop = BAND_DEFAULTS.get(band, BAND_DEFAULTS["S"])
+        start, stop = bands.get(band, bands["S"])
         self.single_freq.setValue((start + stop) / 2 / 1e9)
         self.sweep_start.setValue(start / 1e9)
         self.sweep_stop.setValue(stop / 1e9)
 
     def _on_radar_profile_changed(self, name: str) -> None:
-        profile: Optional[RadarProfile] = RADAR_PROFILES.get(name)
+        profiles: Mapping[str, RadarProfile] = cast(
+            Mapping[str, RadarProfile], RADAR_PROFILES
+        )
+        profile: Optional[RadarProfile] = profiles.get(name)
         if profile is None or name.startswith("Custom"):
             return
 
@@ -443,22 +500,58 @@ class MainWindow(QtWidgets.QMainWindow):
             self.single_freq.setValue(profile.frequency_ghz)
 
     def _open_mesh(self) -> None:
-        path, _ = QtWidgets.QFileDialog.getOpenFileName(self, "Open STL", str(Path.home()), "Mesh (*.stl *.obj *.glb *.gltf)")
-        if not path:
+        path_str, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self,
+            "Open STL",
+            str(Path.home()),
+            "Mesh (*.stl *.obj *.glb *.gltf)",
+        )
+        if not path_str:
             return
-        mesh = trimesh.load_mesh(path, force="mesh")
-        if isinstance(mesh, trimesh.Scene):
-            mesh = trimesh.util.concatenate(
-                [g for g in mesh.geometry.values() if isinstance(g, trimesh.Trimesh)]
+
+        path = Path(path_str)
+        try:
+            mesh_obj = trimesh.load_mesh(path, force="mesh")
+
+            mesh_t: trimesh.Trimesh
+            if isinstance(mesh_obj, trimesh.Scene):
+                parts = [
+                    g
+                    for g in mesh_obj.geometry.values()
+                    if isinstance(g, trimesh.Trimesh)
+                ]
+                if not parts:
+                    raise ValueError("Scene contains no Trimesh geometry.")
+                mesh_t = trimesh.util.concatenate(parts)  # type: ignore[arg-type]
+            elif isinstance(mesh_obj, trimesh.Trimesh):
+                mesh_t = mesh_obj
+            else:
+                raise ValueError("Unsupported mesh type loaded.")
+
+            mesh_t.remove_unreferenced_vertices()
+            mesh_t.update_faces(mesh_t.nondegenerate_faces())
+
+            if len(mesh_t.faces) > 50000:
+                simplify = getattr(
+                    mesh_t, "simplify_quadratic_decimation", None
+                )  # type: ignore[attr-defined]
+                if callable(simplify):
+                    mesh_t = simplify(50000)  # type: ignore[misc]
+
+            self.mesh = mesh_t
+            self.mesh_path = path
+            self.file_label.setText(path.name)
+            self._draw_mesh_preview()
+        except Exception as exc:  # noqa: BLE001
+            QtWidgets.QMessageBox.critical(
+                self,
+                "Error loading mesh",
+                f"Failed to load mesh:\n{exc}",
             )
-        mesh.remove_unreferenced_vertices()
-        mesh.update_faces(mesh.nondegenerate_faces())
-        if len(mesh.faces) > 50000:
-            mesh = mesh.simplify_quadratic_decimation(50000)
-        self.mesh = mesh
-        self.mesh_path = Path(path)
-        self.file_label.setText(Path(path).name)
-        self._draw_mesh_preview()
+            self.mesh = None
+            self.mesh_path = None
+            self.file_label.setText("No file loaded")
+            self.model_canvas.clear()
 
     def _refresh_powerplant_tables(self) -> None:
         self.engine_table.setRowCount(0)
@@ -468,16 +561,27 @@ class MainWindow(QtWidgets.QMainWindow):
             for col, value in enumerate(
                 [eng.x, eng.y, eng.z, eng.radius_m, eng.length_m, eng.yaw_deg]
             ):
-                self.engine_table.setItem(row, col, QtWidgets.QTableWidgetItem(f"{value:.2f}"))
+                self.engine_table.setItem(
+                    row, col, QtWidgets.QTableWidgetItem(f"{value:.2f}")
+                )
 
         self.prop_table.setRowCount(0)
         for prop in self.propellers:
             row = self.prop_table.rowCount()
             self.prop_table.insertRow(row)
-            values = [prop.x, prop.y, prop.z, prop.radius_m, prop.blade_count, prop.rpm]
+            values = [
+                prop.x,
+                prop.y,
+                prop.z,
+                prop.radius_m,
+                prop.blade_count,
+                prop.rpm,
+            ]
             for col, value in enumerate(values):
                 fmt = "{:.2f}" if isinstance(value, float) else "{}"
-                self.prop_table.setItem(row, col, QtWidgets.QTableWidgetItem(fmt.format(value)))
+                self.prop_table.setItem(
+                    row, col, QtWidgets.QTableWidgetItem(fmt.format(value))
+                )
 
     def _prompt_engine(self, existing: Optional[EngineMount] = None) -> Optional[EngineMount]:
         dialog = QtWidgets.QDialog(self)
@@ -513,12 +617,21 @@ class MainWindow(QtWidgets.QMainWindow):
         form.addRow("Radius (m)", radius)
         form.addRow("Length (m)", length)
         form.addRow("Yaw (deg)", yaw)
-        buttons = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel)
+        buttons = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
+        )
         form.addRow(buttons)
         buttons.accepted.connect(dialog.accept)
         buttons.rejected.connect(dialog.reject)
         if dialog.exec_() == QtWidgets.QDialog.Accepted:
-            return EngineMount(x=x.value(), y=y.value(), z=z.value(), radius_m=radius.value(), length_m=length.value(), yaw_deg=yaw.value())
+            return EngineMount(
+                x=x.value(),
+                y=y.value(),
+                z=z.value(),
+                radius_m=radius.value(),
+                length_m=length.value(),
+                yaw_deg=yaw.value(),
+            )
         return None
 
     def _prompt_prop(self, existing: Optional[Propeller] = None) -> Optional[Propeller]:
@@ -560,7 +673,9 @@ class MainWindow(QtWidgets.QMainWindow):
         form.addRow("Blade count", blades)
         form.addRow("RPM", rpm)
         form.addRow("Yaw (deg)", yaw)
-        buttons = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel)
+        buttons = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
+        )
         form.addRow(buttons)
         buttons.accepted.connect(dialog.accept)
         buttons.rejected.connect(dialog.reject)
@@ -653,7 +768,9 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _run_simulation(self) -> None:
         if self.mesh is None:
-            QtWidgets.QMessageBox.warning(self, "No mesh", "Please load a 3D model first.")
+            QtWidgets.QMessageBox.warning(
+                self, "No mesh", "Please load a 3D model first."
+            )
             return
         settings = self._settings_from_ui()
         material = self.material_db.get(self.material_combo.currentText())
@@ -683,6 +800,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self._update_heatmap_plot()
         self._draw_mesh_preview()
 
+    def _on_exit(self) -> None:
+        """Slot wrapper so connect() sees a void-returning callable."""
+        self.close()
+
     # ------------------------------------------------------------------
     def _draw_mesh_preview(self) -> None:
         self.model_canvas.clear()
@@ -691,15 +812,20 @@ class MainWindow(QtWidgets.QMainWindow):
             self.model_canvas.draw_idle()
             return
         mesh = self.mesh
-        ax.add_collection3d(
-            Poly3DCollection(mesh.vertices[mesh.faces], facecolor="#6baed6", edgecolor="k", alpha=0.4)
+        ax.add_collection3d(  # type: ignore[attr-defined]
+            Poly3DCollection(
+                mesh.vertices[mesh.faces],
+                facecolor="#6baed6",
+                edgecolor="k",
+                alpha=0.4,
+            )
         )
         bounds = mesh.bounds
         max_range = (bounds[1] - bounds[0]).max()
         mid = (bounds[1] + bounds[0]) / 2
         ax.set_xlim(mid[0] - max_range / 2, mid[0] + max_range / 2)
         ax.set_ylim(mid[1] - max_range / 2, mid[1] + max_range / 2)
-        ax.set_zlim(mid[2] - max_range / 2, mid[2] + max_range / 2)
+        ax.set_zlim(mid[2] - max_range / 2, mid[2] + max_range / 2)  # type: ignore[attr-defined]
         ax.set_title("Model preview")
         self.model_canvas.draw_idle()
 
@@ -709,17 +835,17 @@ class MainWindow(QtWidgets.QMainWindow):
         self.polar_canvas.clear()
         ax = self.polar_canvas.figure.add_subplot(111, polar=True)
         az, rcs = self.result.slice_for_elevation(self.elevation_spin.value())
-        freq_labels = []
         for idx, freq in enumerate(self.result.frequencies_hz):
             values = rcs[idx]
             if self.scale_mode.currentText() == "Linear":
                 values = 10 ** (values / 10)
             ax.plot(np.radians(az), values, label=f"{freq/1e9:.2f} GHz")
-            freq_labels.append(freq)
-        ax.set_theta_zero_location("N")
-        ax.set_theta_direction(-1)
+        ax.set_theta_zero_location("N")  # type: ignore[attr-defined]
+        ax.set_theta_direction(-1)  # type: ignore[attr-defined]
         ax.legend()
-        ax.set_title(f"Polar plot ({self.result.band}-band, {self.result.polarization})")
+        ax.set_title(
+            f"Polar plot ({self.result.band}-band, {self.result.polarization})"
+        )
         self.polar_canvas.draw_idle()
 
     def _populate_frequency_selector(self, freqs: np.ndarray) -> None:
@@ -757,17 +883,30 @@ class MainWindow(QtWidgets.QMainWindow):
         x = radius * np.cos(el_grid) * np.cos(az_grid)
         y = radius * np.cos(el_grid) * np.sin(az_grid)
         z = radius * np.sin(el_grid)
-        surf = ax.plot_surface(x, y, z, facecolors=plt.cm.viridis(r_norm), rstride=1, cstride=1, alpha=0.9)
-        mappable = plt.cm.ScalarMappable(cmap=plt.cm.viridis)
+        cmap = plt.get_cmap("viridis")
+        ax.plot_surface(  # type: ignore[attr-defined]
+            x,
+            y,
+            z,
+            facecolors=cmap(r_norm),
+            rstride=1,
+            cstride=1,
+            alpha=0.9,
+        )
+        from matplotlib.cm import ScalarMappable  # local import to keep stubs happy
+
+        mappable = ScalarMappable(cmap=cmap)
         mappable.set_array(rcs)
-        self.rcs3d_canvas.figure.colorbar(mappable, ax=ax, shrink=0.5, aspect=10, label="RCS (dBsm)")
+        self.rcs3d_canvas.figure.colorbar(
+            mappable, ax=ax, shrink=0.5, aspect=10, label="RCS (dBsm)"
+        )
         title = f"3D RCS at {self.result.frequencies_hz[freq_idx]/1e9:.2f} GHz"
         if self.result.radar_profile:
             title += f" – {self.result.radar_profile}"
         if self.result.target_speed_mps:
             title += f" @ {self.result.target_speed_mps:.0f} m/s"
         ax.set_title(title)
-        ax.set_box_aspect((1, 1, 1))
+        ax.set_box_aspect((1, 1, 1))  # type: ignore[arg-type]
         self.rcs3d_canvas.draw_idle()
 
     def _update_heatmap_plot(self) -> None:
@@ -799,14 +938,24 @@ class MainWindow(QtWidgets.QMainWindow):
             template = self.template_lib.load_template(path)
             row = self.templates_table.rowCount()
             self.templates_table.insertRow(row)
-            self.templates_table.setItem(row, 0, QtWidgets.QTableWidgetItem(template.name))
-            self.templates_table.setItem(row, 1, QtWidgets.QTableWidgetItem(template.target_class))
-            self.templates_table.setItem(row, 2, QtWidgets.QTableWidgetItem(template.band))
-            self.templates_table.setItem(row, 3, QtWidgets.QTableWidgetItem("-"))
+            self.templates_table.setItem(
+                row, 0, QtWidgets.QTableWidgetItem(template.name)
+            )
+            self.templates_table.setItem(
+                row, 1, QtWidgets.QTableWidgetItem(template.target_class)
+            )
+            self.templates_table.setItem(
+                row, 2, QtWidgets.QTableWidgetItem(template.band)
+            )
+            self.templates_table.setItem(
+                row, 3, QtWidgets.QTableWidgetItem("-")
+            )
 
     def _create_template(self) -> None:
         if self.result is None:
-            QtWidgets.QMessageBox.information(self, "No result", "Run a simulation first.")
+            QtWidgets.QMessageBox.information(
+                self, "No result", "Run a simulation first."
+            )
             return
         name, ok = QtWidgets.QInputDialog.getText(self, "Template name", "Name")
         if not ok or not name:
@@ -814,38 +963,58 @@ class MainWindow(QtWidgets.QMainWindow):
         cls, ok = QtWidgets.QInputDialog.getText(self, "Target class", "Class")
         if not ok or not cls:
             return
-        template = self.template_lib.create_from_result(self.result, name=name, target_class=cls)
+        template = self.template_lib.create_from_result(
+            self.result, name=name, target_class=cls
+        )
         path = self.template_lib.save_template(template)
         QtWidgets.QMessageBox.information(self, "Template saved", f"Saved to {path}")
         self._refresh_templates()
 
     def _match_templates(self) -> None:
         if self.result is None:
-            QtWidgets.QMessageBox.warning(self, "No result", "Run a simulation first.")
+            QtWidgets.QMessageBox.warning(
+                self, "No result", "Run a simulation first."
+            )
             return
         matches = self.template_lib.match(self.result)
         self.templates_table.setRowCount(0)
         for template, score in matches:
             row = self.templates_table.rowCount()
             self.templates_table.insertRow(row)
-            self.templates_table.setItem(row, 0, QtWidgets.QTableWidgetItem(template.name))
-            self.templates_table.setItem(row, 1, QtWidgets.QTableWidgetItem(template.target_class))
-            self.templates_table.setItem(row, 2, QtWidgets.QTableWidgetItem(template.band))
-            self.templates_table.setItem(row, 3, QtWidgets.QTableWidgetItem(f"{score:.2f}"))
+            self.templates_table.setItem(
+                row, 0, QtWidgets.QTableWidgetItem(template.name)
+            )
+            self.templates_table.setItem(
+                row, 1, QtWidgets.QTableWidgetItem(template.target_class)
+            )
+            self.templates_table.setItem(
+                row, 2, QtWidgets.QTableWidgetItem(template.band)
+            )
+            self.templates_table.setItem(
+                row, 3, QtWidgets.QTableWidgetItem(f"{score:.2f}")
+            )
 
     # ------------------------------------------------------------------
     def _save_project(self) -> None:
-        path, _ = QtWidgets.QFileDialog.getSaveFileName(self, "Save project", str(Path.home()), "Project (*.json)")
-        if not path:
+        path_str, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self, "Save project", str(Path.home()), "Project (*.json)"
+        )
+        if not path_str:
             return
-        state = ProjectState(mesh_path=str(self.mesh_path) if self.mesh_path else None, settings=self._settings_from_ui(), material_name=self.material_combo.currentText())
-        save_project(path, state)
+        state = ProjectState(
+            mesh_path=str(self.mesh_path) if self.mesh_path else None,
+            settings=self._settings_from_ui(),
+            material_name=self.material_combo.currentText(),
+        )
+        save_project(path_str, state)
 
     def _load_project(self) -> None:
-        path, _ = QtWidgets.QFileDialog.getOpenFileName(self, "Load project", str(Path.home()), "Project (*.json)")
-        if not path:
+        path_str, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self, "Load project", str(Path.home()), "Project (*.json)"
+        )
+        if not path_str:
             return
-        state = load_project(path)
+        state = load_project(path_str)
         self.band_combo.setCurrentText(state.settings.band)
         self.pol_combo.setCurrentText(state.settings.polarization)
         self.reflections_spin.setValue(state.settings.max_reflections)
@@ -862,7 +1031,10 @@ class MainWindow(QtWidgets.QMainWindow):
             if state.settings.frequency_hz:
                 self.single_freq.setValue(state.settings.frequency_hz / 1e9)
         self.speed_spin.setValue(state.settings.target_speed_mps)
-        if state.settings.radar_profile and state.settings.radar_profile in RADAR_PROFILES:
+        profiles: Mapping[str, RadarProfile] = cast(
+            Mapping[str, RadarProfile], RADAR_PROFILES
+        )
+        if state.settings.radar_profile and state.settings.radar_profile in profiles:
             self.radar_combo.setCurrentText(state.settings.radar_profile)
         else:
             self.radar_combo.setCurrentText("Custom (manual)")
@@ -882,46 +1054,78 @@ class MainWindow(QtWidgets.QMainWindow):
             self._open_mesh_from_path(self.mesh_path)
 
     def _open_mesh_from_path(self, path: Path) -> None:
-        mesh = trimesh.load_mesh(path, force="mesh")
-        if isinstance(mesh, trimesh.Scene):
-            mesh = trimesh.util.concatenate(
-                [g for g in mesh.geometry.values() if isinstance(g, trimesh.Trimesh)]
+        try:
+            mesh_obj = trimesh.load_mesh(path, force="mesh")
+
+            mesh_t: trimesh.Trimesh
+            if isinstance(mesh_obj, trimesh.Scene):
+                parts = [
+                    g
+                    for g in mesh_obj.geometry.values()
+                    if isinstance(g, trimesh.Trimesh)
+                ]
+                if not parts:
+                    raise ValueError("Scene contains no Trimesh geometry.")
+                mesh_t = trimesh.util.concatenate(parts)  # type: ignore[arg-type]
+            elif isinstance(mesh_obj, trimesh.Trimesh):
+                mesh_t = mesh_obj
+            else:
+                raise ValueError("Unsupported mesh type loaded.")
+
+            mesh_t.remove_unreferenced_vertices()
+            mesh_t.update_faces(mesh_t.nondegenerate_faces())
+            self.mesh = mesh_t
+            self.file_label.setText(path.name)
+            self._draw_mesh_preview()
+        except Exception as exc:  # noqa: BLE001
+            QtWidgets.QMessageBox.critical(
+                self,
+                "Error loading mesh",
+                f"Failed to load mesh from project:\n{exc}",
             )
-        mesh.remove_unreferenced_vertices()
-        mesh.update_faces(mesh.nondegenerate_faces())
-        self.mesh = mesh
-        self.file_label.setText(path.name)
-        self._draw_mesh_preview()
 
     def _export_csv(self) -> None:
         if self.result is None:
-            QtWidgets.QMessageBox.warning(self, "No result", "Run a simulation first.")
+            QtWidgets.QMessageBox.warning(
+                self, "No result", "Run a simulation first."
+            )
             return
-        path, _ = QtWidgets.QFileDialog.getSaveFileName(self, "Export CSV", str(Path.home()), "CSV (*.csv)")
-        if not path:
+        path_str, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self, "Export CSV", str(Path.home()), "CSV (*.csv)"
+        )
+        if not path_str:
             return
-        with open(path, "w", encoding="utf-8") as fh:
-            fh.write("band,frequency_hz,azimuth_deg,elevation_deg,polarization,rcs_linear,rcs_db\n")
+        path = Path(path_str)
+        with path.open("w", encoding="utf-8") as fh:
+            fh.write(
+                "band,frequency_hz,azimuth_deg,elevation_deg,polarization,rcs_linear,rcs_db\n"
+            )
             for fi, freq in enumerate(self.result.frequencies_hz):
                 for ei, el in enumerate(self.result.elevation_deg):
                     for ai, az in enumerate(self.result.azimuth_deg):
                         rcs_db = self.result.rcs_dbsm[fi, ei, ai]
                         rcs_lin = 10 ** (rcs_db / 10)
                         fh.write(
-                            f"{self.result.band},{freq},{az},{el},{self.result.polarization},{rcs_lin},{rcs_db}\n"
+                            f"{self.result.band},{freq},{az},{el},"
+                            f"{self.result.polarization},{rcs_lin},{rcs_db}\n"
                         )
 
     def _export_plots(self) -> None:
         if self.result is None:
-            QtWidgets.QMessageBox.warning(self, "No result", "Run a simulation first.")
+            QtWidgets.QMessageBox.warning(
+                self, "No result", "Run a simulation first."
+            )
             return
-        path, _ = QtWidgets.QFileDialog.getSaveFileName(self, "Export plots", str(Path.home()), "PNG (*.png)")
-        if not path:
+        path_str, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self, "Export plots", str(Path.home()), "PNG (*.png)"
+        )
+        if not path_str:
             return
-        self.polar_canvas.figure.savefig(path)
-        rcs_path = Path(path).with_name(Path(path).stem + "_3d.png")
+        base = Path(path_str)
+        self.polar_canvas.figure.savefig(base)
+        rcs_path = base.with_name(base.stem + "_3d.png")
         self.rcs3d_canvas.figure.savefig(rcs_path)
-        heatmap_path = Path(path).with_name(Path(path).stem + "_heatmap.png")
+        heatmap_path = base.with_name(base.stem + "_heatmap.png")
         self.heatmap_canvas.figure.savefig(heatmap_path)
 
     def _edit_materials(self) -> None:
@@ -940,14 +1144,19 @@ def run_app() -> None:
 
 
 class MaterialsDialog(QtWidgets.QDialog):
-    def __init__(self, db: MaterialDatabase, parent: Optional[QtWidgets.QWidget] = None) -> None:
+    def __init__(
+        self, db: MaterialDatabase, parent: Optional[QtWidgets.QWidget] = None
+    ) -> None:
         super().__init__(parent)
         self.db = db
         self.setWindowTitle("Materials")
         layout = QtWidgets.QVBoxLayout(self)
 
-        self.table = QtWidgets.QTableWidget(0, 5)
-        self.table.setHorizontalHeaderLabels(["Name", "ε'", "ε''", "σ", "Reflectivity"])
+        # Name, eps_real, eps_imag, sigma, R, R_H, R_V, R_HV, R_VH
+        self.table = QtWidgets.QTableWidget(0, 9)
+        self.table.setHorizontalHeaderLabels(
+            ["Name", "ε'", "ε''", "σ", "R", "R_H", "R_V", "R_HV", "R_VH"]
+        )
         layout.addWidget(self.table)
         self._reload()
 
@@ -971,10 +1180,47 @@ class MaterialsDialog(QtWidgets.QDialog):
             row = self.table.rowCount()
             self.table.insertRow(row)
             self.table.setItem(row, 0, QtWidgets.QTableWidgetItem(mat.name))
-            self.table.setItem(row, 1, QtWidgets.QTableWidgetItem(f"{mat.epsilon_real:.2f}"))
-            self.table.setItem(row, 2, QtWidgets.QTableWidgetItem(f"{mat.epsilon_imag:.2f}"))
-            self.table.setItem(row, 3, QtWidgets.QTableWidgetItem(f"{mat.conductivity:.2e}"))
-            self.table.setItem(row, 4, QtWidgets.QTableWidgetItem(f"{mat.reflectivity:.2f}"))
+            self.table.setItem(
+                row, 1, QtWidgets.QTableWidgetItem(f"{mat.epsilon_real:.2f}")
+            )
+            self.table.setItem(
+                row, 2, QtWidgets.QTableWidgetItem(f"{mat.epsilon_imag:.2f}")
+            )
+            self.table.setItem(
+                row, 3, QtWidgets.QTableWidgetItem(f"{mat.conductivity:.2e}")
+            )
+            self.table.setItem(
+                row, 4, QtWidgets.QTableWidgetItem(f"{mat.reflectivity:.2f}")
+            )
+            # Optional polarimetric fields (show blanks if None)
+            self.table.setItem(
+                row,
+                5,
+                QtWidgets.QTableWidgetItem(
+                    "" if mat.reflectivity_h is None else f"{mat.reflectivity_h:.2f}"
+                ),
+            )
+            self.table.setItem(
+                row,
+                6,
+                QtWidgets.QTableWidgetItem(
+                    "" if mat.reflectivity_v is None else f"{mat.reflectivity_v:.2f}"
+                ),
+            )
+            self.table.setItem(
+                row,
+                7,
+                QtWidgets.QTableWidgetItem(
+                    "" if mat.reflectivity_hv is None else f"{mat.reflectivity_hv:.2f}"
+                ),
+            )
+            self.table.setItem(
+                row,
+                8,
+                QtWidgets.QTableWidgetItem(
+                    "" if mat.reflectivity_vh is None else f"{mat.reflectivity_vh:.2f}"
+                ),
+            )
 
     def _add(self) -> None:
         material = self._prompt_material()
@@ -986,9 +1232,13 @@ class MaterialsDialog(QtWidgets.QDialog):
         row = self.table.currentRow()
         if row < 0:
             return
-        name = self.table.item(row, 0).text()
+        item = self.table.item(row, 0)
+        if item is None:
+            return
+        name = item.text()
         material = self._prompt_material(name)
         if material:
+            # update_material merges dict into existing entry
             self.db.update_material(name, **material.as_dict())
             self._reload()
 
@@ -996,7 +1246,10 @@ class MaterialsDialog(QtWidgets.QDialog):
         row = self.table.currentRow()
         if row < 0:
             return
-        name = self.table.item(row, 0).text()
+        item = self.table.item(row, 0)
+        if item is None:
+            return
+        name = item.text()
         self.db.delete_material(name)
         self._reload()
 
@@ -1016,18 +1269,51 @@ class MaterialsDialog(QtWidgets.QDialog):
         refl = QtWidgets.QDoubleSpinBox()
         refl.setRange(0, 1)
         refl.setSingleStep(0.05)
+
+        refl_h = QtWidgets.QDoubleSpinBox()
+        refl_h.setRange(0, 1)
+        refl_h.setSingleStep(0.05)
+
+        refl_v = QtWidgets.QDoubleSpinBox()
+        refl_v.setRange(0, 1)
+        refl_v.setSingleStep(0.05)
+
+        refl_hv = QtWidgets.QDoubleSpinBox()
+        refl_hv.setRange(0, 1)
+        refl_hv.setSingleStep(0.05)
+
+        refl_vh = QtWidgets.QDoubleSpinBox()
+        refl_vh.setRange(0, 1)
+        refl_vh.setSingleStep(0.05)
+
         if existing:
             mat = self.db.get(existing)
             eps_r.setValue(mat.epsilon_real)
             eps_i.setValue(mat.epsilon_imag)
             sigma.setValue(mat.conductivity)
             refl.setValue(mat.reflectivity)
+            if mat.reflectivity_h is not None:
+                refl_h.setValue(mat.reflectivity_h)
+            if mat.reflectivity_v is not None:
+                refl_v.setValue(mat.reflectivity_v)
+            if mat.reflectivity_hv is not None:
+                refl_hv.setValue(mat.reflectivity_hv)
+            if mat.reflectivity_vh is not None:
+                refl_vh.setValue(mat.reflectivity_vh)
+
         form.addRow("Name", name_edit)
         form.addRow("ε'", eps_r)
         form.addRow("ε''", eps_i)
         form.addRow("σ", sigma)
-        form.addRow("Reflectivity", refl)
-        buttons = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel)
+        form.addRow("R (scalar)", refl)
+        form.addRow("R_H", refl_h)
+        form.addRow("R_V", refl_v)
+        form.addRow("R_HV", refl_hv)
+        form.addRow("R_VH", refl_vh)
+
+        buttons = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
+        )
         form.addRow(buttons)
         buttons.accepted.connect(dialog.accept)
         buttons.rejected.connect(dialog.reject)
@@ -1038,6 +1324,12 @@ class MaterialsDialog(QtWidgets.QDialog):
                 epsilon_imag=eps_i.value(),
                 conductivity=sigma.value(),
                 reflectivity=refl.value(),
+                reflectivity_h=refl_h.value(),
+                reflectivity_v=refl_v.value(),
+                reflectivity_hh=None,
+                reflectivity_vv=None,
+                reflectivity_hv=refl_hv.value(),
+                reflectivity_vh=refl_vh.value(),
             )
         return None
 
