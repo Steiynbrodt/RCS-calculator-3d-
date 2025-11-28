@@ -12,6 +12,7 @@ import dataclasses
 
 import numpy as np
 import trimesh
+from typing import Dict, Optional
 
 from .facet_po import facet_rcs
 from .rcs_engine import Material, RCSEngine, SimulationSettings
@@ -164,7 +165,7 @@ def compare_box(freq_hz: float = 10e9) -> dict[str, np.ndarray]:
     }
 
 
-def compare_nctr_rotors(mesh: trimesh.Trimesh | None = None) -> dict[str, np.ndarray]:
+def compare_nctr_rotors(mesh: Optional[trimesh.Trimesh] = None) -> Dict[str, np.ndarray]:
     """Compare whole-body spin against a rotating sub-component."""
 
     if mesh is None:

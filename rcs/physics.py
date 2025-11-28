@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import concurrent.futures
 from functools import partial
+from typing import Optional, Tuple
 
 import numpy as np
 import trimesh
@@ -99,7 +100,15 @@ def _material_reflectivity(material: object) -> float:
     raise TypeError("Material must provide a 'reflectivity' attribute or key.")
 
 
-def simulate_rcs(mesh: trimesh.Trimesh, material: object, max_reflections: int, freq_ghz: float, az_steps: int = 360, el_steps: int = 181, max_workers: int | None = None) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+def simulate_rcs(
+    mesh: trimesh.Trimesh,
+    material: object,
+    max_reflections: int,
+    freq_ghz: float,
+    az_steps: int = 360,
+    el_steps: int = 181,
+    max_workers: Optional[int] = None,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Simulate RCS for a mesh using a grid of incoming directions."""
     if mesh is None or not hasattr(mesh, "bounding_sphere"):
         raise ValueError("Kein gültiges 3D-Mesh geladen.")

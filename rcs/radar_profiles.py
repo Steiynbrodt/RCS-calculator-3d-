@@ -3,25 +3,26 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Dict, Optional
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class RadarProfile:
     """Minimal radar description used to pre-fill simulation settings."""
 
     name: str
     band: str
-    frequency_ghz: float | None = None
+    frequency_ghz: Optional[float] = None
     polarization: str = "H"
-    sweep_start_ghz: float | None = None
-    sweep_stop_ghz: float | None = None
-    sweep_steps: int | None = None
-    max_reflections: int | None = None
-    default_speed_mps: float | None = None
-    note: str | None = None
+    sweep_start_ghz: Optional[float] = None
+    sweep_stop_ghz: Optional[float] = None
+    sweep_steps: Optional[int] = None
+    max_reflections: Optional[int] = None
+    default_speed_mps: Optional[float] = None
+    note: Optional[str] = None
 
 
-RADAR_PROFILES: dict[str, RadarProfile] = {
+RADAR_PROFILES: Dict[str, RadarProfile] = {
     "Custom (manual)": RadarProfile(name="Custom (manual)", band="S", frequency_ghz=None),
     "S-300 30N6 Flap Lid (X-band 9.2 GHz)": RadarProfile(
         name="S-300 30N6 Flap Lid (X-band 9.2 GHz)", band="X", frequency_ghz=9.2, polarization="H/V", max_reflections=4

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import numpy as np
 import trimesh
+from typing import Dict, Optional, Tuple, Union
 
 from .math_utils import rotation_matrix
 
@@ -71,10 +72,19 @@ def simulate_nctr_signature(
     pulses: int = 256,
     window: int = 64,
     hop: int = 16,
-    rotating_groups: dict[str, dict] | None = None,
+    rotating_groups: Optional[Dict[str, dict]] = None,
     return_range_doppler: bool = False,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray] | tuple[
-    np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray
+) -> Union[
+    Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray],
+    Tuple[
+        np.ndarray,
+        np.ndarray,
+        np.ndarray,
+        np.ndarray,
+        np.ndarray,
+        np.ndarray,
+        np.ndarray,
+    ],
 ]:
     """Generate a synthetic micro-Doppler (and optional range–Doppler) signature.
 

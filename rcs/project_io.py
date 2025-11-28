@@ -5,18 +5,19 @@ from __future__ import annotations
 import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import Optional, Union
 
 from .rcs_engine import EngineMount, FrequencySweep, Propeller, SimulationSettings
 
 
-@dataclass(slots=True)
+@dataclass
 class ProjectState:
-    mesh_path: str | None
+    mesh_path: Optional[str]
     settings: SimulationSettings
     material_name: str
 
 
-def save_project(path: str | Path, state: ProjectState) -> None:
+def save_project(path: Union[str, Path], state: ProjectState) -> None:
     settings_dict = asdict(state.settings)
     if state.settings.sweep:
         settings_dict["sweep"] = asdict(state.settings.sweep)
@@ -28,7 +29,7 @@ def save_project(path: str | Path, state: ProjectState) -> None:
     Path(path).write_text(json.dumps(payload, indent=2))
 
 
-def load_project(path: str | Path) -> ProjectState:
+def load_project(path: Union[str, Path]) -> ProjectState:
     data = json.loads(Path(path).read_text())
     settings_data = data["settings"]
     sweep_data = settings_data.pop("sweep", None)

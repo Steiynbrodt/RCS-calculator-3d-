@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from itertools import combinations
-from typing import Iterable
+from typing import Iterable, Optional
 
 import numpy as np
 import trimesh
@@ -95,7 +95,7 @@ def build_sharp_edges(mesh: trimesh.Trimesh) -> list[SharpEdge]:
     return edges
 
 
-def _edge_visible(edge: SharpEdge, k_hat: np.ndarray, mesh: trimesh.Trimesh | None) -> bool:
+def _edge_visible(edge: SharpEdge, k_hat: np.ndarray, mesh: Optional[trimesh.Trimesh]) -> bool:
     """Rough visibility for an edge given a look direction."""
 
     # Require at least one adjacent face to be illuminated.
@@ -130,7 +130,7 @@ def edge_diffraction_field(
     edges: Iterable[SharpEdge],
     k_hat: np.ndarray,
     k: float,
-    mesh: trimesh.Trimesh | None = None,
+    mesh: Optional[trimesh.Trimesh] = None,
 ) -> complex:
     """Sum heuristic edge diffraction contributions for a single direction."""
 
@@ -157,7 +157,7 @@ def corner_field(
     areas: np.ndarray,
     centers: np.ndarray,
     k: float,
-    illuminated_mask: np.ndarray | None = None,
+    illuminated_mask: Optional[np.ndarray] = None,
 ) -> complex:
     """Detect trihedral-like normal triplets and return a heuristic field term."""
 

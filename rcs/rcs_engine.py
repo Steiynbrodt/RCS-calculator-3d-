@@ -40,7 +40,7 @@ def to_dbsm(rcs_lin: np.ndarray) -> np.ndarray:
     return 10.0 * np.log10(np.maximum(rcs_lin, 1e-20))
 
 
-@dataclass(slots=True)
+@dataclass
 class FrequencySweep:
     """Frequency sweep definition."""
 
@@ -52,7 +52,7 @@ class FrequencySweep:
         return np.linspace(self.start_hz, self.stop_hz, self.steps)
 
 
-@dataclass(slots=True)
+@dataclass
 class SimulationSettings:
     """Parameters for an RCS simulation run."""
 
@@ -60,23 +60,23 @@ class SimulationSettings:
     polarization: str
     max_reflections: int
     method: str = "ray"  # "ray" | "facet_po"
-    engines: list["EngineMount"] = field(default_factory=list)
-    propellers: list["Propeller"] = field(default_factory=list)
-    frequency_hz: float | None = None
-    sweep: FrequencySweep | None = None
+    engines: List["EngineMount"] = field(default_factory=list)
+    propellers: List["Propeller"] = field(default_factory=list)
+    frequency_hz: Optional[float] = None
+    sweep: Optional[FrequencySweep] = None
     azimuth_start: float = 0.0
     azimuth_stop: float = 360.0
     azimuth_step: float = 5.0
     elevation_start: float = -90.0
     elevation_stop: float = 90.0
     elevation_step: float = 5.0
-    elevation_slice_deg: float | None = None
-    azimuth_slice_deg: float | None = None
+    elevation_slice_deg: Optional[float] = None
+    azimuth_slice_deg: Optional[float] = None
     target_speed_mps: float = 0.0
-    radar_profile: str | None = None
-    tx_yaw_deg: float | None = None
-    tx_elev_deg: float | None = None
-    max_workers: int | None = None
+    radar_profile: Optional[str] = None
+    tx_yaw_deg: Optional[float] = None
+    tx_elev_deg: Optional[float] = None
+    max_workers: Optional[int] = None
 
     def frequencies(self) -> np.ndarray:
         if self.frequency_hz is not None:
@@ -106,8 +106,8 @@ class Material:
     epsilon_imag: float
     conductivity: float
     reflectivity: float
-    reflectivity_h: float | None = None
-    reflectivity_v: float | None = None
+    reflectivity_h: Optional[float] = None
+    reflectivity_v: Optional[float] = None
 
     def as_dict(self) -> dict:
         return asdict(self)
@@ -131,8 +131,8 @@ class SimulationResult:
     elevation_deg: np.ndarray
     rcs_dbsm: np.ndarray  # shape (f, el, az)
     target_speed_mps: float
-    radar_profile: str | None = None
-    doppler_hz: np.ndarray | None = None
+    radar_profile: Optional[str] = None
+    doppler_hz: Optional[np.ndarray] = None
 
     def slice_for_elevation(self, elevation: float) -> tuple[np.ndarray, np.ndarray]:
         idx = int(np.argmin(np.abs(self.elevation_deg - elevation)))
@@ -190,7 +190,7 @@ class RCSEngine:
         material: Material,
         settings: SimulationSettings,
         *,
-        progress: callable | None = None,
+        progress: Optional[Callable[[int], None]] = None,
     ) -> SimulationResult:
         if mesh is None:
             raise ValueError("A mesh must be provided for simulation.")
