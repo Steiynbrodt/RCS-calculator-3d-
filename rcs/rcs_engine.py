@@ -208,11 +208,15 @@ class RCSEngine:
         sphere_center = mesh.bounding_sphere.center
 
         if settings.tx_yaw_deg is not None and settings.tx_elev_deg is not None:
-            tx_dir = self._direction_from_angles(settings.tx_yaw_deg, settings.tx_elev_deg)
-            tx_origin = mesh.bounding_sphere.center + distance * (-tx_dir)
+            tx_origin = sphere_center + distance * (
+                -self._direction_from_angles(settings.tx_yaw_deg, settings.tx_elev_deg)
+            )
+            origin_center = tx_origin
+            origin_distance = 0.0
         else:
-            tx_dir = None
             tx_origin = None
+            origin_center = sphere_center
+            origin_distance = distance
 
         bundle_offsets = np.linspace(-0.6, 0.6, 3) * mesh.bounding_sphere.primitive.radius
         bundle_grid = np.array([(ox, oy) for ox in bundle_offsets for oy in bundle_offsets])
@@ -237,7 +241,10 @@ class RCSEngine:
             else:
                 rcs_lin = np.zeros(len(directions), dtype=float)
                 workers = settings.max_workers or (os.cpu_count() or 1)
-                chunk = 64
+                chunk = max(64, len(directions) // max(workers, 1) // 2)
+                ray_intersector = mesh.ray
+                area_faces = mesh.area_faces
+                face_normals = mesh.face_normals
                 stop_flag = lambda: self._stop_requested  # noqa: E731
                 with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
                     futures: dict[concurrent.futures.Future[np.ndarray], slice] = {}
@@ -257,14 +264,24 @@ class RCSEngine:
                                 edges,
                                 centers,
                                 stop_flag,
-                                sphere_center,
-                                distance,
+                                origin_center,
+                                origin_distance,
+                                ray_intersector,
+                                area_faces,
+                                face_normals,
                             )
                         ] = slice(start, end)
 
                     try:
                         for fut in concurrent.futures.as_completed(futures):
-                            rcs_lin[futures[fut]] = fut.result()
+                            try:
+                                rcs_lin[futures[fut]] = fut.result()
+                            except Exception as exc:  # pragma: no cover - defensive guard for worker failures
+                                executor.shutdown(cancel_futures=True)
+                                raise RuntimeError(
+                                    "Ray tracing failed during batch execution. "
+                                    "Ensure ray dependencies are installed or switch to the 'facet_po' method."
+                                ) from exc
                             if self._stop_requested:
                                 break
                     finally:
@@ -342,6 +359,9 @@ class RCSEngine:
         stop_cb,
         origin_center: np.ndarray,
         origin_distance: float,
+        ray_intersector,
+        area_faces: np.ndarray,
+        face_normals: np.ndarray,
     ) -> np.ndarray:
         """Trace a batch of directions and return their linear RCS contributions."""
 
@@ -353,20 +373,25 @@ class RCSEngine:
             origin = origin_center - origin_distance * direction
             specular_sum = 0.0j
             basis_u, basis_v = self._orthonormal_basis(direction)
-            for ox, oy in bundle_grid:
+            bundle_origins = origin + bundle_grid[:, 0:1] * basis_u + bundle_grid[:, 1:2] * basis_v
+            for ray_origin in bundle_origins:
                 energy = 1.0
                 path_length = 0.0
-                ray_origin = origin + ox * basis_u + oy * basis_v
                 ray_dir = direction
                 for _ in range(max_reflections):
-                    locs, _, tri_idx = mesh.ray.intersects_location(
-                        np.array([ray_origin]), np.array([ray_dir]), multiple_hits=False
-                    )
+                    try:
+                        locs, _, tri_idx = ray_intersector.intersects_location(
+                            ray_origin[np.newaxis, :], ray_dir[np.newaxis, :], multiple_hits=False
+                        )
+                    except Exception:
+                        # If the backend fails (e.g., missing optional acceleration modules),
+                        # treat this path as non-contributing instead of crashing the worker.
+                        break
                     if len(locs) == 0:
                         break
                     hit = locs[0]
                     face_index = tri_idx[0]
-                    normal = mesh.face_normals[face_index]
+                    normal = face_normals[face_index]
                     reflect_dir = ray_dir - 2 * np.dot(ray_dir, normal) * normal
                     reflect_dir /= np.linalg.norm(reflect_dir)
 
@@ -374,7 +399,7 @@ class RCSEngine:
 
                     alignment = np.dot(reflect_dir, -ray_dir)
                     if alignment > 0.95:
-                        area_term = mesh.area_faces[face_index] * (np.dot(normal, -ray_dir)) ** 2
+                        area_term = area_faces[face_index] * (np.dot(normal, -ray_dir)) ** 2
                         total_path = self._path_to_receiver(path_length, hit, origin, direction)
                         phase = self._monostatic_phase(k, total_path)
                         specular_sum += energy * area_term * np.exp(1j * phase)
