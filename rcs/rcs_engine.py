@@ -276,18 +276,11 @@ class RCSEngine:
                         for fut in concurrent.futures.as_completed(futures):
                             try:
                                 rcs_lin[futures[fut]] = fut.result()
-                            except concurrent.futures.CancelledError as exc:
-                                executor.shutdown(cancel_futures=True)
-                                raise RuntimeError(
-                                    "Ray tracing was cancelled before completion. "
-                                    "Ensure ray dependencies are installed or retry with the 'facet_po' method."
-                                ) from exc
                             except Exception as exc:  # pragma: no cover - defensive guard for worker failures
                                 executor.shutdown(cancel_futures=True)
                                 raise RuntimeError(
                                     "Ray tracing failed during batch execution. "
-                                    "Ensure ray dependencies are installed or switch to the 'facet_po' method. "
-                                    f"Worker error: {exc}."
+                                    "Ensure ray dependencies are installed or switch to the 'facet_po' method."
                                 ) from exc
                             if self._stop_requested:
                                 break
@@ -381,45 +374,42 @@ class RCSEngine:
             specular_sum = 0.0j
             basis_u, basis_v = self._orthonormal_basis(direction)
             bundle_origins = origin + bundle_grid[:, 0:1] * basis_u + bundle_grid[:, 1:2] * basis_v
-            try:
-                for ray_origin in bundle_origins:
-                    energy = 1.0
-                    path_length = 0.0
-                    ray_dir = direction
-                    for _ in range(max_reflections):
-                        try:
-                            locs, _, tri_idx = ray_intersector.intersects_location(
-                                ray_origin[np.newaxis, :], ray_dir[np.newaxis, :], multiple_hits=False
-                            )
-                        except Exception:
-                            # If the backend fails (e.g., missing optional acceleration modules),
-                            # treat this path as non-contributing instead of crashing the worker.
-                            break
-                        if len(locs) == 0:
-                            break
-                        hit = locs[0]
-                        face_index = tri_idx[0]
-                        normal = face_normals[face_index]
-                        reflect_dir = ray_dir - 2 * np.dot(ray_dir, normal) * normal
-                        reflect_dir /= np.linalg.norm(reflect_dir)
+            for ray_origin in bundle_origins:
+                energy = 1.0
+                path_length = 0.0
+                ray_dir = direction
+                for _ in range(max_reflections):
+                    try:
+                        locs, _, tri_idx = ray_intersector.intersects_location(
+                            ray_origin[np.newaxis, :], ray_dir[np.newaxis, :], multiple_hits=False
+                        )
+                    except Exception:
+                        # If the backend fails (e.g., missing optional acceleration modules),
+                        # treat this path as non-contributing instead of crashing the worker.
+                        break
+                    if len(locs) == 0:
+                        break
+                    hit = locs[0]
+                    face_index = tri_idx[0]
+                    normal = face_normals[face_index]
+                    reflect_dir = ray_dir - 2 * np.dot(ray_dir, normal) * normal
+                    reflect_dir /= np.linalg.norm(reflect_dir)
 
-                        path_length += float(np.linalg.norm(hit - ray_origin))
+                    path_length += float(np.linalg.norm(hit - ray_origin))
 
-                        alignment = np.dot(reflect_dir, -ray_dir)
-                        if alignment > 0.95:
-                            area_term = area_faces[face_index] * (np.dot(normal, -ray_dir)) ** 2
-                            total_path = self._path_to_receiver(path_length, hit, origin, direction)
-                            phase = self._monostatic_phase(k, total_path)
-                            specular_sum += energy * area_term * np.exp(1j * phase)
+                    alignment = np.dot(reflect_dir, -ray_dir)
+                    if alignment > 0.95:
+                        area_term = area_faces[face_index] * (np.dot(normal, -ray_dir)) ** 2
+                        total_path = self._path_to_receiver(path_length, hit, origin, direction)
+                        phase = self._monostatic_phase(k, total_path)
+                        specular_sum += energy * area_term * np.exp(1j * phase)
 
-                        energy *= reflectivity * loss_per_reflection
-                        if energy < MIN_ENERGY:
-                            break
+                    energy *= reflectivity * loss_per_reflection
+                    if energy < MIN_ENERGY:
+                        break
 
-                        ray_origin = hit + 1e-4 * reflect_dir
-                        ray_dir = reflect_dir
-            except Exception as exc:  # pragma: no cover - defensive guard for worker failures
-                raise RuntimeError(f"Ray tracing worker failed at direction index {idx}: {exc}") from exc
+                    ray_origin = hit + 1e-4 * reflect_dir
+                    ray_dir = reflect_dir
 
             k_hat = direction / (np.linalg.norm(direction) + 1e-12)
             illum_mask = (mesh.face_normals @ -k_hat) > 0.0
