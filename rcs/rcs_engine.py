@@ -36,7 +36,6 @@ def to_dbsm(rcs_lin: np.ndarray) -> np.ndarray:
 
     Values are clipped to ``1e-20`` to avoid log singularities.
     """
-
     return 10.0 * np.log10(np.maximum(rcs_lin, 1e-20))
 
 
@@ -99,6 +98,14 @@ class Material:
 
     ``reflectivity_h``/``reflectivity_v`` allow basic HH/VV differences; if
     omitted the scalar ``reflectivity`` is used for all channels.
+
+    For more detailed polarimetric control, the following optional fields
+    approximate a 2x2 scattering matrix (in the power domain):
+
+    - ``reflectivity_hh`` / ``reflectivity_vv``: co-pol H→H and V→V
+    - ``reflectivity_hv`` / ``reflectivity_vh``: cross-pol H→V and V→H
+
+    If these are omitted they fall back to the scalar / H / V values.
     """
 
     name: str
@@ -108,6 +115,10 @@ class Material:
     reflectivity: float
     reflectivity_h: Optional[float] = None
     reflectivity_v: Optional[float] = None
+    reflectivity_hh: Optional[float] = None
+    reflectivity_vv: Optional[float] = None
+    reflectivity_hv: Optional[float] = None
+    reflectivity_vh: Optional[float] = None
 
     def as_dict(self) -> dict:
         return asdict(self)
@@ -235,7 +246,6 @@ class RCSEngine:
             origin_center = tx_origin
             origin_distance = 0.0
         else:
-            tx_origin = None
             origin_center = sphere_center
             origin_distance = distance
 
@@ -259,7 +269,6 @@ class RCSEngine:
                 if doppler_all is not None:
                     doppler_all[fi] = 2 * settings.target_speed_mps * freq_hz / 3e8
                 loss_per_reflection = frequency_loss(freq_ghz)
-
                 if settings.method == "facet_po":
                     rcs_lin = facet_rcs(mesh, reflectivity, freq_hz, directions)
                 else:
@@ -285,7 +294,7 @@ class RCSEngine:
                                     reflectivity,
                                     loss_per_reflection,
                                     k,
-                                    edges,
+                                    tuple(edges),  # <- cast list[SharpEdge] to tuple[...] for type checker
                                     centers,
                                     stop_flag,
                                     origin_center,
@@ -428,7 +437,9 @@ class RCSEngine:
                 for _ in range(max_reflections):
                     try:
                         locs, _, tri_idx = ray_intersector.intersects_location(
-                            ray_origin[np.newaxis, :], ray_dir[np.newaxis, :], multiple_hits=False
+                            ray_origin[np.newaxis, :],
+                            ray_dir[np.newaxis, :],
+                            multiple_hits=False,
                         )
                     except Exception:
                         # If the backend fails (e.g., missing optional acceleration modules),
@@ -496,7 +507,6 @@ class RCSEngine:
     @staticmethod
     def _compute_wavelength(freq_hz: float) -> float:
         """Return the free-space wavelength (metres) for ``freq_hz``."""
-
         c = 3e8
         return c / max(freq_hz, 1e-9)
 
@@ -512,7 +522,6 @@ class RCSEngine:
             Total travelled path length in metres (already including outbound
             and inbound paths where appropriate).
         """
-
         return k * total_path_length
 
     @staticmethod
@@ -546,38 +555,90 @@ class RCSEngine:
 
     @staticmethod
     def _select_reflectivity(material: Material, polarization: str) -> float:
-        """Choose an effective scalar reflectivity for the desired polarization."""
+        """Choose an effective scalar reflectivity for the desired polarization.
 
-        pol = polarization.upper()
+        Supports both dataclass ``Material`` and dict-like material containers.
+        Co-pol and cross-pol terms approximate a 2x2 scattering matrix
+        in the power domain.
+        """
 
-        def _get(attr: str, default: Optional[float]) -> float:
+        def _get_optional(attr: str) -> Optional[float]:
+            # Dataclass-style attribute access
             if hasattr(material, attr):
                 value = getattr(material, attr)
-                if value is not None:
-                    return float(value)
-            if hasattr(material, "get"):
-                value = material.get(attr)  # type: ignore[call-arg]
-                if value is not None:
-                    return float(value)
-            return float(default) if default is not None else 1.0
+            # Dict-like access if supported
+            elif hasattr(material, "get"):
+                try:
+                    value = material.get(attr)  # type: ignore[call-arg]
+                except TypeError:
+                    value = None
+            else:
+                value = None
 
-        base_reflectivity = _get("reflectivity", 1.0)
-        refl_h = _get("reflectivity_h", base_reflectivity)
-        refl_v = _get("reflectivity_v", base_reflectivity)
+            if value is None:
+                return None
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                return None
 
-        refl_h = _get_value("reflectivity_h")
-        refl_v = _get_value("reflectivity_v")
-        refl_h = base if refl_h is None or not np.isfinite(refl_h) else refl_h
-        refl_v = base if refl_v is None or not np.isfinite(refl_v) else refl_v
+        # Base reflectivity (scalar), used as ultimate fallback
+        base = _get_optional("reflectivity") or 1.0
 
-        pol = polarization.upper()
-        if pol.startswith("H"):
-            return max(float(refl_h), 0.0)
-        if pol.startswith("V"):
-            return max(float(refl_v), 0.0)
-        if "CROSS" in pol or pol.startswith("X"):
-            return 0.5 * (refl_h + refl_v)
-        return 0.5 * (refl_h + refl_v)
+        # Normalize polarization string:
+        # "H", "HH", "H/H", "H-H", etc. → "HH" style
+        pol = polarization.upper().replace("-", "").replace("/", "").strip()
+
+        # --- Co-pol terms ---
+        refl_hh = _get_optional("reflectivity_hh")
+        refl_vv = _get_optional("reflectivity_vv")
+        refl_h = _get_optional("reflectivity_h")
+        refl_v = _get_optional("reflectivity_v")
+
+        if refl_hh is None:
+            refl_hh = refl_h if refl_h is not None else base
+        if refl_vv is None:
+            refl_vv = refl_v if refl_v is not None else base
+
+        if not np.isfinite(refl_hh) or refl_hh < 0.0:
+            refl_hh = base
+        if not np.isfinite(refl_vv) or refl_vv < 0.0:
+            refl_vv = base
+
+        # --- Cross-pol terms ---
+        refl_hv = _get_optional("reflectivity_hv")
+        refl_vh = _get_optional("reflectivity_vh")
+
+        if refl_hv is None and refl_vh is None:
+            # Default: low cross-pol, e.g. about -10 dB relative to average co-pol
+            cross_default = 0.1 * (refl_hh + refl_vv) * 0.5
+            refl_hv = cross_default
+            refl_vh = cross_default
+        else:
+            if refl_hv is None:
+                refl_hv = refl_vh if refl_vh is not None else 0.0
+            if refl_vh is None:
+                refl_vh = refl_hv if refl_hv is not None else 0.0
+
+        if not np.isfinite(refl_hv) or refl_hv < 0.0:
+            refl_hv = 0.0
+        if not np.isfinite(refl_vh) or refl_vh < 0.0:
+            refl_vh = 0.0
+
+        # --- Map polarization to effective scalar ---
+        if pol in ("H", "HH"):
+            return max(float(refl_hh), 0.0)
+        if pol in ("V", "VV"):
+            return max(float(refl_vv), 0.0)
+        if pol in ("HV", "VH", "X", "XPOL", "CROSS"):
+            # Simple cross-pol approximation: average of HV and VH
+            return max(float(0.5 * (refl_hv + refl_vh)), 0.0)
+        if pol in ("RL", "LR", "RC", "LC", "C", "CIRC"):
+            # Circular or generic → average co-pol
+            return max(float(0.5 * (refl_hh + refl_vv)), 0.0)
+
+        # Fallback for anything else: treat as generic linear with averaged co-pol
+        return max(float(0.5 * (refl_hh + refl_vv)), 0.0)
 
 
 __all__ = [
