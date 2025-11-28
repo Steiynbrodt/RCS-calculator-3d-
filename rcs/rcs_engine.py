@@ -11,7 +11,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 import os
 import traceback
-from typing import Iterable, Sequence
+from typing import Callable, List, Optional, Tuple
 import concurrent.futures
 
 import numpy as np
@@ -197,16 +197,34 @@ class RCSEngine:
         # Only build the ray intersector when the ray-tracing engine is used; the
         # facet-based path can run without optional ray backends installed.
         if settings.method != "facet_po":
-            mesh.ray = build_ray_intersector(mesh)
+            try:
+                mesh.ray = build_ray_intersector(mesh)
+            except ModuleNotFoundError as exc:
+                raise RuntimeError(
+                    "Ray-tracing requires the optional 'rtree' dependency. "
+                    "Install it with 'pip install rtree' or switch to the 'facet_po' method."
+                ) from exc
 
         freqs = settings.frequencies()
         az = settings.azimuths()
         el = settings.elevations()
         dirs = direction_grid(az, el)
 
-        distance = mesh.bounding_sphere.primitive.radius * 6.0 + 1.0
+        bounding = getattr(mesh, "bounding_sphere", None)
+        radius = 0.0
+        sphere_center = getattr(mesh, "centroid", np.zeros(3))
+        if bounding is not None:
+            sphere_center = getattr(bounding, "center", sphere_center)
+            radius = float(getattr(getattr(bounding, "primitive", None), "radius", 0.0) or 0.0)
+        if not np.isfinite(radius) or radius <= 0:
+            extents = getattr(mesh, "extents", None)
+            if extents is not None:
+                radius = float(np.linalg.norm(extents)) / 2.0
+        if not np.isfinite(radius) or radius <= 0:
+            radius = 1.0
+
+        distance = radius * 6.0 + 1.0
         directions = dirs.reshape(-1, 3)
-        sphere_center = mesh.bounding_sphere.center
 
         if settings.tx_yaw_deg is not None and settings.tx_elev_deg is not None:
             tx_origin = sphere_center + distance * (
@@ -219,7 +237,7 @@ class RCSEngine:
             origin_center = sphere_center
             origin_distance = distance
 
-        bundle_offsets = np.linspace(-0.6, 0.6, 3) * mesh.bounding_sphere.primitive.radius
+        bundle_offsets = np.linspace(-0.6, 0.6, 3) * radius
         bundle_grid = np.array([(ox, oy) for ox in bundle_offsets for oy in bundle_offsets])
 
         rcs_all = np.zeros((len(freqs), len(el), len(az)), dtype=float)
@@ -285,8 +303,7 @@ class RCSEngine:
                     directions, rcs_lin, reflectivity, settings
                 )
 
-                rcs_db = 10 * np.log10(rcs_lin.reshape(len(el), len(az)))
-                rcs_all[fi] = rcs_db
+                rcs_all[fi] = to_dbsm(rcs_lin.reshape(len(el), len(az)))
                 if progress:
                     progress(int((fi + 1) / len(freqs) * 100))
         finally:
