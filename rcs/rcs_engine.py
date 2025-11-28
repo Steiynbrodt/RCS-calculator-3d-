@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 import os
+import traceback
 from typing import Iterable, Sequence
 import concurrent.futures
 
@@ -289,15 +290,64 @@ class RCSEngine:
 
                 if self._stop_requested:
                     break
+                freq_ghz = freq_hz / 1e9
+                wavelength = self._compute_wavelength(freq_hz)
+                k = 2 * np.pi / wavelength
+                if doppler_all is not None:
+                    doppler_all[fi] = 2 * settings.target_speed_mps * freq_hz / 3e8
+                loss_per_reflection = frequency_loss(freq_ghz)
+                if settings.method == "facet_po":
+                    rcs_lin = facet_rcs(mesh, reflectivity, freq_hz, directions)
+                else:
+                    rcs_lin = np.zeros(len(directions), dtype=float)
+                    workers = settings.max_workers or (os.cpu_count() or 1)
+                    chunk = max(64, len(directions) // max(workers, 1) // 2)
+                    ray_intersector = mesh.ray
+                    area_faces = mesh.area_faces
+                    face_normals = mesh.face_normals
+                    stop_flag = lambda: self._stop_requested  # noqa: E731
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
+                        futures: dict[concurrent.futures.Future[np.ndarray], slice] = {}
+                        for start in range(0, len(directions), chunk):
+                            end = min(len(directions), start + chunk)
+                            dir_chunk = directions[start:end]
+                            futures[
+                                executor.submit(
+                                    self._trace_direction_block,
+                                    mesh,
+                                    dir_chunk,
+                                    bundle_grid,
+                                    settings.max_reflections,
+                                    reflectivity,
+                                    loss_per_reflection,
+                                    k,
+                                    edges,
+                                    centers,
+                                    stop_flag,
+                                    origin_center,
+                                    origin_distance,
+                                    ray_intersector,
+                                    area_faces,
+                                    face_normals,
+                                )
+                            ] = slice(start, end)
 
-            rcs_lin = self._apply_powerplant_signatures(directions, rcs_lin, reflectivity, settings)
+                        self._drain_trace_futures(futures, rcs_lin)
 
-            rcs_db = 10 * np.log10(rcs_lin.reshape(len(el), len(az)))
-            rcs_all[fi] = rcs_db
-            if progress:
-                progress(int((fi + 1) / len(freqs) * 100))
+                    if self._stop_requested:
+                        break
 
-        self._stop_requested = False
+                rcs_lin = self._apply_powerplant_signatures(
+                    directions, rcs_lin, reflectivity, settings
+                )
+
+                rcs_db = 10 * np.log10(rcs_lin.reshape(len(el), len(az)))
+                rcs_all[fi] = rcs_db
+                if progress:
+                    progress(int((fi + 1) / len(freqs) * 100))
+        finally:
+            self._stop_requested = False
+
         return SimulationResult(
             band=settings.band,
             polarization=settings.polarization,
@@ -309,6 +359,40 @@ class RCSEngine:
             radar_profile=settings.radar_profile,
             doppler_hz=doppler_all,
         )
+
+    # ------------------------------------------------------------------
+    def _drain_trace_futures(
+        self,
+        futures: dict[concurrent.futures.Future[np.ndarray], slice],
+        rcs_lin: np.ndarray,
+    ) -> None:
+        """Collect results from ray-tracing workers with clear failure context."""
+
+        pending = set(futures.keys())
+        try:
+            for fut in concurrent.futures.as_completed(pending):
+                pending.remove(fut)
+                sl = futures[fut]
+                try:
+                    rcs_lin[sl] = fut.result()
+                except concurrent.futures.CancelledError as exc:
+                    raise RuntimeError(
+                        "Ray tracing was cancelled before completion. "
+                        "Ensure ray dependencies are installed or retry with the 'facet_po' method."
+                    ) from exc
+                except Exception as exc:  # pragma: no cover - defensive guard for worker failures
+                    formatted = "".join(traceback.format_exception(exc)).strip()
+                    raise RuntimeError(
+                        "Ray tracing failed during batch execution. "
+                        "Ensure ray dependencies are installed or switch to the 'facet_po' method. "
+                        f"Worker slice {sl} error: {exc}.\n{formatted}"
+                    ) from exc
+                if self._stop_requested:
+                    break
+        finally:
+            if self._stop_requested:
+                for fut in pending:
+                    fut.cancel()
 
     # ------------------------------------------------------------------
     def _apply_powerplant_signatures(
