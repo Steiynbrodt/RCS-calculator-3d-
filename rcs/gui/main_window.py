@@ -417,7 +417,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.sweep_stop.setValue(stop / 1e9)
 
     def _on_radar_profile_changed(self, name: str) -> None:
-        profile: RadarProfile | None = RADAR_PROFILES.get(name)
+        profile: Optional[RadarProfile] = RADAR_PROFILES.get(name)
         if profile is None or name.startswith("Custom"):
             return
 
@@ -479,7 +479,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 fmt = "{:.2f}" if isinstance(value, float) else "{}"
                 self.prop_table.setItem(row, col, QtWidgets.QTableWidgetItem(fmt.format(value)))
 
-    def _prompt_engine(self, existing: EngineMount | None = None) -> EngineMount | None:
+    def _prompt_engine(self, existing: Optional[EngineMount] = None) -> Optional[EngineMount]:
         dialog = QtWidgets.QDialog(self)
         dialog.setWindowTitle("Engine / intake")
         form = QtWidgets.QFormLayout(dialog)
@@ -521,7 +521,7 @@ class MainWindow(QtWidgets.QMainWindow):
             return EngineMount(x=x.value(), y=y.value(), z=z.value(), radius_m=radius.value(), length_m=length.value(), yaw_deg=yaw.value())
         return None
 
-    def _prompt_prop(self, existing: Propeller | None = None) -> Propeller | None:
+    def _prompt_prop(self, existing: Optional[Propeller] = None) -> Optional[Propeller]:
         dialog = QtWidgets.QDialog(self)
         dialog.setWindowTitle("Propeller")
         form = QtWidgets.QFormLayout(dialog)
@@ -940,7 +940,7 @@ def run_app() -> None:
 
 
 class MaterialsDialog(QtWidgets.QDialog):
-    def __init__(self, db: MaterialDatabase, parent: QtWidgets.QWidget | None = None) -> None:
+    def __init__(self, db: MaterialDatabase, parent: Optional[QtWidgets.QWidget] = None) -> None:
         super().__init__(parent)
         self.db = db
         self.setWindowTitle("Materials")
@@ -1000,7 +1000,7 @@ class MaterialsDialog(QtWidgets.QDialog):
         self.db.delete_material(name)
         self._reload()
 
-    def _prompt_material(self, existing: str | None = None) -> Material | None:
+    def _prompt_material(self, existing: Optional[str] = None) -> Optional[Material]:
         dialog = QtWidgets.QDialog(self)
         dialog.setWindowTitle("Material")
         form = QtWidgets.QFormLayout(dialog)
