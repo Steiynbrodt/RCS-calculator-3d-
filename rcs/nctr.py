@@ -32,6 +32,11 @@ def _vertex_weights(mesh: trimesh.Trimesh) -> np.ndarray:
     if np.all(weights == 0):
         return np.ones(len(mesh.vertices))
 
+    nonzero = weights[weights > 0]
+    if len(nonzero):
+        min_positive = float(np.min(nonzero))
+        weights[weights == 0] = min_positive
+
     weights /= np.max(weights)
     return weights
 

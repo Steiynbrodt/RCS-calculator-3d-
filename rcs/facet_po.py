@@ -20,12 +20,17 @@ def facet_rcs(
     The calculation is vectorised across all look directions for efficiency.
     """
 
-    wavelength = 3e8 / frequency_hz
+    freq = max(float(frequency_hz), 1e-9)
+    wavelength = 3e8 / freq
     area = mesh.area_faces.reshape(-1, 1)
     normals = mesh.face_normals
 
+    dirs = np.asarray(directions, dtype=float)
+    norms = np.linalg.norm(dirs, axis=1, keepdims=True)
+    dirs = dirs / (norms + 1e-12)
+
     # Directions point from radar to target; invert to get incidence toward faces.
-    look = -directions.T  # shape (3, M)
+    look = -dirs.T  # shape (3, M)
     cos_theta = normals @ look
     cos_theta = np.clip(cos_theta, 0.0, 1.0)
 

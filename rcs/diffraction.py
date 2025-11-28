@@ -98,6 +98,7 @@ def build_sharp_edges(mesh: trimesh.Trimesh) -> List[SharpEdge]:
 def _edge_visible(edge: SharpEdge, k_hat: np.ndarray, mesh: Optional[trimesh.Trimesh]) -> bool:
     """Rough visibility for an edge given a look direction."""
 
+    k_hat = k_hat / (np.linalg.norm(k_hat) + 1e-12)
     # Require at least one adjacent face to be illuminated.
     k_i = -k_hat
     illum = False
@@ -110,13 +111,32 @@ def _edge_visible(edge: SharpEdge, k_hat: np.ndarray, mesh: Optional[trimesh.Tri
 
     if mesh is None:
         return True
-    if not hasattr(mesh, "ray"):
-        mesh.ray = build_ray_intersector(mesh)
 
-    origin = edge.center + k_i * (mesh.bounding_sphere.primitive.radius * 4.0 + 1.0)
+    # Guard against degenerate bounding spheres.
+    radius = 0.0
+    try:
+        radius = float(getattr(getattr(mesh.bounding_sphere, "primitive", None), "radius", 0.0) or 0.0)
+    except Exception:
+        radius = 0.0
+    if not np.isfinite(radius) or radius <= 0:
+        extents = getattr(mesh, "extents", None)
+        if extents is not None:
+            radius = float(np.linalg.norm(extents)) / 2.0
+    if not np.isfinite(radius) or radius <= 0:
+        radius = 1.0
+
+    if not hasattr(mesh, "ray"):
+        try:
+            mesh.ray = build_ray_intersector(mesh)
+        except Exception:
+            # If the ray backend is unavailable, fall back to a permissive visibility check.
+            mesh.ray = None
+            return True
+
+    origin = edge.center + k_i * (radius * 4.0 + 1.0)
     direction = -k_i
     try:
-        locs, _, tri_idx = mesh.ray.intersects_location(
+        locs, _, tri_idx = mesh.ray.intersects_location(  # type: ignore[call-arg]
             np.array([origin]), np.array([direction]), multiple_hits=False
         )
     except Exception:
