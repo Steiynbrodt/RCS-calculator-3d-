@@ -40,6 +40,7 @@ def spherical_directions(
         ),
         axis=-1,
     )
+    dirs /= np.linalg.norm(dirs, axis=-1, keepdims=True) + 1e-12
     return az, el, dirs
 
 
@@ -47,7 +48,7 @@ def direction_grid(azimuth_deg: np.ndarray, elevation_deg: np.ndarray) -> np.nda
     """Build a grid of unit direction vectors from azimuth/elevation arrays."""
 
     az_grid, el_grid = np.meshgrid(azimuth_deg, elevation_deg)
-    return np.stack(
+    dirs = np.stack(
         (
             np.cos(np.radians(el_grid)) * np.cos(np.radians(az_grid)),
             np.cos(np.radians(el_grid)) * np.sin(np.radians(az_grid)),
@@ -55,6 +56,7 @@ def direction_grid(azimuth_deg: np.ndarray, elevation_deg: np.ndarray) -> np.nda
         ),
         axis=-1,
     )
+    return dirs / (np.linalg.norm(dirs, axis=-1, keepdims=True) + 1e-12)
 
 
 def frequency_loss(freq_ghz: float, min_loss: float = 0.2) -> float:

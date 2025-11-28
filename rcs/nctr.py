@@ -28,11 +28,16 @@ def _vertex_weights(mesh: trimesh.Trimesh) -> np.ndarray:
         valid = faces[faces != -1]
         if len(valid):
             weights[idx] = float(np.mean(areas[valid]))
+        else:
+            # Keep a small baseline weight for isolated or degenerate vertices.
+            weights[idx] = 1e-3
 
     if np.all(weights == 0):
         return np.ones(len(mesh.vertices))
 
     weights /= np.max(weights)
+    min_nonzero = np.min(weights[weights > 0]) if np.any(weights > 0) else 1.0
+    weights[weights == 0] = min_nonzero
     return weights
 
 
@@ -179,6 +184,8 @@ def simulate_nctr_signature(
             for group in rotating_groups.values():
                 indices = np.asarray(group.get("indices", []), dtype=int)
                 axis = np.asarray(group.get("axis", [0.0, 0.0, 1.0]), dtype=float)
+                if not np.isfinite(axis).all() or np.linalg.norm(axis) < 1e-9:
+                    axis = np.array([0.0, 0.0, 1.0])
                 rpm_group = float(group.get("rpm", rpm))
                 omega_group = 2 * np.pi * rpm_group / 60.0
                 rot = _axis_angle_rotation(axis, omega_group * t)
