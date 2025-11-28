@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import numpy as np
 import trimesh
-from typing import Dict, Optional, Tuple, Union
+from typing import Dict, List, Optional, Tuple, Union
 
 from .math_utils import rotation_matrix
 

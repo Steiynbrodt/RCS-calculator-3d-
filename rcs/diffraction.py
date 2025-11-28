@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from itertools import combinations
-from typing import Iterable, Optional
+from typing import Iterable, List, Optional, Tuple
 
 import numpy as np
 import trimesh
@@ -168,6 +168,7 @@ def corner_field(
         return 0.0 + 0.0j
 
     k_i = -k_hat
+    field = 0.0 + 0.0j
     for i, j, l in combinations(candidates, 3):
         n1, n2, n3 = normals[[i, j, l]]
         # All three must face the radar.
@@ -181,9 +182,9 @@ def corner_field(
         effective_area = areas[[i, j, l]].sum()
         corner_center = centers[[i, j, l]].mean(axis=0)
         amp = CORNER_GAIN * effective_area
-        return amp * np.exp(1j * k * np.dot(corner_center, k_hat))
+        field += amp * np.exp(1j * k * np.dot(corner_center, k_hat))
 
-    return 0.0 + 0.0j
+    return field
 
 
 __all__ = [
