@@ -1,23 +1,37 @@
 """Core RCS simulation routines and data containers.
 
-The simplified engine keeps the public API stable for the GUI while adding
-lightweight physics-inspired effects such as coherent field summation,
-dual-polarization reflectivity selection, and optional bistatic geometry.
-All distances are in metres and frequencies in Hz unless stated otherwise.
+This module exposes a relatively simple public API that is used by the GUI:
+
+- :class:`SimulationSettings`
+- :class:`Material`
+- :class:`EngineMount`
+- :class:`Propeller`
+- :class:`SimulationResult`
+- :class:`RCSEngine`
+
+Internally we provide three conceptual simulation modes:
+
+1. "Fast"       – facet-based physical–optics only (fast, low RAM)
+2. "Realistic"  – facet PO + edge/corner diffraction + simple engine/propeller
+3. "SBR"        – experimental shooting-and-bouncing-rays (multi-bounce)
+
+All distances are metres, all frequencies are Hz.
 """
 
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
-import os
-import traceback
-from typing import Callable, List, Optional, Tuple
-import concurrent.futures
+from typing import Callable, Iterable, List, Optional, Tuple, Any
 
 import numpy as np
 import trimesh
 
-from .diffraction import build_sharp_edges, corner_field, edge_diffraction_field
+from .diffraction import (
+    SharpEdge,
+    build_sharp_edges,
+    corner_field,
+    edge_diffraction_field,
+)
 from .facet_po import facet_rcs
 from .math_utils import direction_grid, frequency_loss
 from .physics import MIN_ENERGY, build_ray_intersector
@@ -31,10 +45,14 @@ BAND_DEFAULTS = {
 }
 
 
-def to_dbsm(rcs_lin: np.ndarray) -> np.ndarray:
-    """Convert linear RCS (m^2) to decibel-square-metres.
+# ---------------------------------------------------------------------------
+# helpers
 
-    Values are clipped to ``1e-20`` to avoid log singularities.
+
+def to_dbsm(rcs_lin: np.ndarray) -> np.ndarray:
+    """Convert linear RCS (m²) to dBsm.
+
+    Values are clipped to a very small floor to avoid log singularities.
     """
     return 10.0 * np.log10(np.maximum(rcs_lin, 1e-20))
 
@@ -53,12 +71,23 @@ class FrequencySweep:
 
 @dataclass
 class SimulationSettings:
-    """Parameters for an RCS simulation run."""
+    """Parameters for an RCS simulation run.
+
+    Attributes
+    ----------
+    method:
+        String selector for the simulation backend. Accepted values (case
+        insensitive):
+
+        - ``"fast"``, ``"facet_po"`` – facet physical optics only
+        - ``"lo"``, ``"realistic_lo"`` – facet PO + diffraction + engines/props
+        - ``"sbr"``, ``"ray"`` – experimental shooting & bouncing rays
+    """
 
     band: str
     polarization: str
     max_reflections: int
-    method: str = "ray"  # "ray" | "facet_po"
+    method: str = "fast"
     engines: List["EngineMount"] = field(default_factory=list)
     propellers: List["Propeller"] = field(default_factory=list)
     frequency_hz: Optional[float] = None
@@ -75,15 +104,15 @@ class SimulationSettings:
     radar_profile: Optional[str] = None
     tx_yaw_deg: Optional[float] = None
     tx_elev_deg: Optional[float] = None
-    max_workers: Optional[int] = None
+    max_workers: Optional[int] = None  # kept for backwards compatibility
 
     def frequencies(self) -> np.ndarray:
         if self.frequency_hz is not None:
-            return np.array([self.frequency_hz])
+            return np.array([self.frequency_hz], dtype=float)
         if self.sweep is not None:
-            return self.sweep.as_array()
-        default = BAND_DEFAULTS.get(self.band, BAND_DEFAULTS["S"])
-        return np.array([np.mean(default)])
+            return self.sweep.as_array().astype(float)
+        start, stop = BAND_DEFAULTS.get(self.band, BAND_DEFAULTS["S"])
+        return np.array([(start + stop) * 0.5], dtype=float)
 
     def azimuths(self) -> np.ndarray:
         return np.arange(self.azimuth_start, self.azimuth_stop + 1e-6, self.azimuth_step)
@@ -94,19 +123,7 @@ class SimulationSettings:
 
 @dataclass
 class Material:
-    """Material properties used by the simplified RCS engine.
-
-    ``reflectivity_h``/``reflectivity_v`` allow basic HH/VV differences; if
-    omitted the scalar ``reflectivity`` is used for all channels.
-
-    For more detailed polarimetric control, the following optional fields
-    approximate a 2x2 scattering matrix (in the power domain):
-
-    - ``reflectivity_hh`` / ``reflectivity_vv``: co-pol H→H and V→V
-    - ``reflectivity_hv`` / ``reflectivity_vh``: cross-pol H→V and V→H
-
-    If these are omitted they fall back to the scalar / H / V values.
-    """
+    """Material properties used by the simplified RCS engine."""
 
     name: str
     epsilon_real: float
@@ -126,14 +143,7 @@ class Material:
 
 @dataclass
 class SimulationResult:
-    """Container for RCS outputs.
-
-    Notes
-    -----
-    ``rcs_dbsm`` expresses radar cross section in decibel-square-metres
-    (dBsm) relative to 1 m^2. Frequencies are expressed in Hz even when band
-    presets are provided in gigahertz.
-    """
+    """Container for RCS outputs."""
 
     band: str
     polarization: str
@@ -183,17 +193,25 @@ class Propeller:
         return np.array([np.cos(yaw), np.sin(yaw), 0.0])
 
 
+# ---------------------------------------------------------------------------
+# main engine
+
+
 class RCSEngine:
     """High-level interface for computing RCS."""
 
     def __init__(self) -> None:
         self._stop_requested = False
 
+    # lifecycle -------------------------------------------------------------
+
     def request_stop(self) -> None:
         self._stop_requested = True
 
     def reset(self) -> None:
         self._stop_requested = False
+
+    # core computation ------------------------------------------------------
 
     def compute(
         self,
@@ -203,123 +221,172 @@ class RCSEngine:
         *,
         progress: Optional[Callable[[int], None]] = None,
     ) -> SimulationResult:
+        """Run an RCS simulation.
+
+        The heavy lifting is done per *elevation ring* instead of over the full
+        azimuth–elevation grid at once. This keeps peak memory usage low while
+        leaving angular resolution completely unchanged.
+        """
         if mesh is None:
             raise ValueError("A mesh must be provided for simulation.")
-        # Only build the ray intersector when the ray-tracing engine is used; the
-        # facet-based path can run without optional ray backends installed.
-        if settings.method != "facet_po":
-            try:
-                mesh.ray = build_ray_intersector(mesh)
-            except ModuleNotFoundError as exc:
-                raise RuntimeError(
-                    "Ray-tracing requires the optional 'rtree' dependency. "
-                    "Install it with 'pip install rtree' or switch to the 'facet_po' method."
-                ) from exc
+
+        # Normalise method selector
+        method_key = (settings.method or "fast").lower()
+        if method_key in {"fast", "facet_po"}:
+            mode = "fast"
+        elif method_key in {"lo", "realistic_lo", "realistic"}:
+            mode = "lo"
+        elif method_key in {"sbr", "ray", "raytracing", "experimental_sbr"}:
+            mode = "sbr"
+        else:
+            mode = "fast"
 
         freqs = settings.frequencies()
         az = settings.azimuths()
         el = settings.elevations()
-        dirs = direction_grid(az, el)
 
-        bounding = getattr(mesh, "bounding_sphere", None)
-        radius = 0.0
-        sphere_center = getattr(mesh, "centroid", np.zeros(3))
-        if bounding is not None:
-            sphere_center = getattr(bounding, "center", sphere_center)
-            radius = float(getattr(getattr(bounding, "primitive", None), "radius", 0.0) or 0.0)
-        if not np.isfinite(radius) or radius <= 0:
-            extents = getattr(mesh, "extents", None)
-            if extents is not None:
-                radius = float(np.linalg.norm(extents)) / 2.0
-        if not np.isfinite(radius) or radius <= 0:
+        # Allocate final result cube; this is intentionally small compared to
+        # any intermediate facet/ray operations.
+        rcs_all = np.zeros((len(freqs), len(el), len(az)), dtype=float)
+        doppler_all: Optional[np.ndarray]
+        doppler_all = np.zeros(len(freqs), dtype=float) if settings.target_speed_mps else None
+
+        # Basic geometry / bounds -------------------------------------------
+        # Use trimesh helpers when available, otherwise fall back to extents.
+        if hasattr(mesh, "bounding_sphere"):
+            bs = mesh.bounding_sphere
+            center = np.asarray(getattr(bs, "center", mesh.centroid), dtype=float)
+            radius = float(getattr(getattr(bs, "primitive", None), "radius", 0.0) or 0.0)
+        else:
+            center = np.asarray(mesh.centroid, dtype=float)
+            radius = 0.0
+
+        if not np.isfinite(radius) or radius <= 0.0:
+            ext = getattr(mesh, "extents", None)
+            if ext is not None:
+                radius = float(np.linalg.norm(ext)) * 0.5
+        if not np.isfinite(radius) or radius <= 0.0:
             radius = 1.0
 
         distance = radius * 6.0 + 1.0
-        directions = dirs.reshape(-1, 3)
-        dir_norms = np.linalg.norm(directions, axis=1, keepdims=True)
-        directions = directions / (dir_norms + 1e-12)
 
+        # Optional monostatic TX position (otherwise we fly a virtual sphere
+        # centered on the model)
         if settings.tx_yaw_deg is not None and settings.tx_elev_deg is not None:
-            tx_origin = sphere_center + distance * (
-                -self._direction_from_angles(settings.tx_yaw_deg, settings.tx_elev_deg)
-            )
-            origin_center = tx_origin
+            tx_dir = self._direction_from_angles(settings.tx_yaw_deg, settings.tx_elev_deg)
+            origin_center = center - distance * tx_dir
             origin_distance = 0.0
         else:
-            origin_center = sphere_center
+            origin_center = center
             origin_distance = distance
 
+        # Small bundle of slightly offset rays to reduce aliasing in SBR mode
         bundle_offsets = np.linspace(-0.6, 0.6, 3) * radius
         bundle_grid = np.array([(ox, oy) for ox in bundle_offsets for oy in bundle_offsets])
 
-        rcs_all = np.zeros((len(freqs), len(el), len(az)), dtype=float)
-        doppler_all = np.zeros(len(freqs), dtype=float) if settings.target_speed_mps else None
+        # Pre-compute mesh helpers used in several modes
         centers = mesh.triangles.mean(axis=1)
-        edges = build_sharp_edges(mesh)
+        face_normals = mesh.face_normals
+        area_faces = mesh.area_faces
+
+        edges: Tuple[SharpEdge, ...] = ()
+        if mode in {"lo", "sbr"}:
+            edges = tuple(build_sharp_edges(mesh))
+
+        # Select effective scalar reflectivity for the current polarisation
         reflectivity = self._select_reflectivity(material, settings.polarization)
 
-        try:
-            for fi, freq_hz in enumerate(freqs):
+        # Only construct ray intersector when needed
+        ray_intersector: Any = None
+        if mode == "sbr":
+            try:
+                mesh.ray = build_ray_intersector(mesh)
+            except ModuleNotFoundError as exc:  # environment dependent
+                raise RuntimeError(
+                    "SBR / ray-tracing mode requires the optional 'rtree' dependency.\n"
+                    "Install it with 'pip install rtree' or switch to 'Fast' / 'Realistic LO' mode."
+                ) from exc
+            ray_intersector = mesh.ray
+
+        # Frequency loop ----------------------------------------------------
+        for fi, freq_hz in enumerate(freqs):
+            if self._stop_requested:
+                break
+
+            freq_ghz = freq_hz / 1e9
+            wavelength = self._compute_wavelength(freq_hz)
+            k = 2.0 * np.pi / wavelength
+            loss_per_reflection = frequency_loss(freq_ghz)
+
+            if doppler_all is not None:
+                doppler_all[fi] = 2.0 * settings.target_speed_mps * freq_hz / 3e8
+
+            # Elevation rings ------------------------------------------------
+            for ei, elev in enumerate(el):
                 if self._stop_requested:
                     break
 
-                freq_ghz = freq_hz / 1e9
-                wavelength = self._compute_wavelength(freq_hz)
-                k = 2 * np.pi / wavelength
-                if doppler_all is not None:
-                    doppler_all[fi] = 2 * settings.target_speed_mps * freq_hz / 3e8
-                loss_per_reflection = frequency_loss(freq_ghz)
-                if settings.method == "facet_po":
-                    rcs_lin = facet_rcs(mesh, reflectivity, freq_hz, directions)
-                else:
-                    rcs_lin = np.zeros(len(directions), dtype=float)
-                    workers = settings.max_workers or (os.cpu_count() or 1)
-                    chunk = max(64, len(directions) // max(workers, 1) // 2)
-                    ray_intersector = mesh.ray
-                    area_faces = mesh.area_faces
-                    face_normals = mesh.face_normals
-                    stop_flag = lambda: self._stop_requested  # noqa: E731
-                    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
-                        futures: dict[concurrent.futures.Future[np.ndarray], slice] = {}
-                        for start in range(0, len(directions), chunk):
-                            end = min(len(directions), start + chunk)
-                            dir_chunk = directions[start:end]
-                            futures[
-                                executor.submit(
-                                    self._trace_direction_block,
-                                    mesh,
-                                    dir_chunk,
-                                    bundle_grid,
-                                    settings.max_reflections,
-                                    reflectivity,
-                                    loss_per_reflection,
-                                    k,
-                                    tuple(edges),  # <- cast list[SharpEdge] to tuple[...] for type checker
-                                    centers,
-                                    stop_flag,
-                                    origin_center,
-                                    origin_distance,
-                                    ray_intersector,
-                                    area_faces,
-                                    face_normals,
-                                )
-                            ] = slice(start, end)
+                # Build directions for this elevation only; shape (N_az, 3)
+                dirs_ring = direction_grid(az, np.array([elev], dtype=float))[0]
 
-                        self._drain_trace_futures(futures, rcs_lin)
+                if mode == "fast":
+                    # pure facet physical optics
+                    rcs_lin_ring = facet_rcs(mesh, reflectivity, freq_hz, dirs_ring)
 
-                    if self._stop_requested:
-                        break
+                elif mode == "lo":
+                    # facet PO +
+                    rcs_lin_ring = facet_rcs(mesh, reflectivity, freq_hz, dirs_ring)
 
-                rcs_lin = self._apply_powerplant_signatures(
-                    directions, rcs_lin, reflectivity, settings
-                )
+                    # add diffraction from edges & corners
+                    if edges:
+                        diff_power = self._diffraction_ring(
+                            mesh,
+                            dirs_ring,
+                            edges,
+                            centers,
+                            face_normals,
+                            area_faces,
+                            k,
+                            reflectivity,
+                        )
+                        rcs_lin_ring = rcs_lin_ring + diff_power
 
-                rcs_all[fi] = to_dbsm(rcs_lin.reshape(len(el), len(az)))
-                if progress:
-                    progress(int((fi + 1) / len(freqs) * 100))
-        finally:
-            self._stop_requested = False
+                    # add simple engines / props
+                    rcs_lin_ring = self._apply_powerplant_signatures(
+                        dirs_ring, rcs_lin_ring, reflectivity, settings
+                    )
 
+                else:  # mode == "sbr"
+                    rcs_lin_ring = self._trace_direction_block(
+                        mesh=mesh,
+                        directions=dirs_ring,
+                        bundle_grid=bundle_grid,
+                        max_reflections=settings.max_reflections,
+                        reflectivity=reflectivity,
+                        loss_per_reflection=loss_per_reflection,
+                        k=k,
+                        edges=edges,
+                        centers=centers,
+                        stop_cb=lambda: self._stop_requested,
+                        origin_center=origin_center,
+                        origin_distance=origin_distance,
+                        ray_intersector=ray_intersector,
+                        area_faces=area_faces,
+                        face_normals=face_normals,
+                    )
+
+                    # Simple engine / prop enhancement on top of SBR
+                    rcs_lin_ring = self._apply_powerplant_signatures(
+                        dirs_ring, rcs_lin_ring, reflectivity, settings
+                    )
+
+                # store in final cube
+                rcs_all[fi, ei, :] = to_dbsm(rcs_lin_ring)
+
+            if progress:
+                progress(int((fi + 1) / max(len(freqs), 1) * 100))
+
+        # Produce final result object
         return SimulationResult(
             band=settings.band,
             polarization=settings.polarization,
@@ -333,40 +400,42 @@ class RCSEngine:
         )
 
     # ------------------------------------------------------------------
-    def _drain_trace_futures(
+    # sub-routines used by several modes
+
+    def _diffraction_ring(
         self,
-        futures: dict[concurrent.futures.Future[np.ndarray], slice],
-        rcs_lin: np.ndarray,
-    ) -> None:
-        """Collect results from ray-tracing workers with clear failure context."""
+        mesh: trimesh.Trimesh,
+        directions: np.ndarray,
+        edges: Iterable[SharpEdge],
+        centers: np.ndarray,
+        face_normals: np.ndarray,
+        area_faces: np.ndarray,
+        k: float,
+        reflectivity: float,
+    ) -> np.ndarray:
+        """Return diffraction power for each direction in ``directions``."""
 
-        pending = set(futures.keys())
-        try:
-            for fut in concurrent.futures.as_completed(pending):
-                pending.remove(fut)
-                sl = futures[fut]
-                try:
-                    rcs_lin[sl] = fut.result()
-                except concurrent.futures.CancelledError as exc:
-                    raise RuntimeError(
-                        "Ray tracing was cancelled before completion. "
-                        "Ensure ray dependencies are installed or retry with the 'facet_po' method."
-                    ) from exc
-                except Exception as exc:  # pragma: no cover - defensive guard for worker failures
-                    formatted = "".join(traceback.format_exception(exc)).strip()
-                    raise RuntimeError(
-                        "Ray tracing failed during batch execution. "
-                        "Ensure ray dependencies are installed or switch to the 'facet_po' method. "
-                        f"Worker slice {sl} error: {exc}.\n{formatted}"
-                    ) from exc
-                if self._stop_requested:
-                    break
-        finally:
-            if self._stop_requested:
-                for fut in pending:
-                    fut.cancel()
+        edges_tuple: Tuple[SharpEdge, ...] = tuple(edges)
+        if not edges_tuple:
+            return np.zeros(len(directions), dtype=float)
 
-    # ------------------------------------------------------------------
+        power = np.zeros(len(directions), dtype=float)
+        for i, direction in enumerate(directions):
+            k_hat = direction / (np.linalg.norm(direction) + 1e-12)
+            illum_mask = (face_normals @ -k_hat) > 0.0
+            edge_term = edge_diffraction_field(edges_tuple, k_hat, k, mesh)
+            corner_term = corner_field(
+                k_hat,
+                face_normals,
+                area_faces,
+                centers,
+                k,
+                illuminated_mask=illum_mask,
+            )
+            power[i] = reflectivity * np.abs(edge_term + corner_term) ** 2
+
+        return power
+
     def _apply_powerplant_signatures(
         self,
         directions: np.ndarray,
@@ -374,18 +443,18 @@ class RCSEngine:
         reflectivity: float,
         settings: SimulationSettings,
     ) -> np.ndarray:
-        """Blend simplified engine intake and propeller disk responses into RCS."""
+        """Blend simplified engine intake and propeller disk responses."""
 
         if not settings.engines and not settings.propellers:
             return rcs_lin
 
-        enhanced = rcs_lin.copy()
+        enhanced = rcs_lin.astype(float, copy=True)
 
         if settings.engines:
             for engine in settings.engines:
                 axis = engine.axis()
                 alignment = np.clip(directions @ axis, 0.0, 1.0)
-                area = np.pi * engine.radius_m**2
+                area = float(np.pi * engine.radius_m**2)
                 cavity_gain = 1.5 + (engine.length_m / max(engine.radius_m, 1e-3))
                 enhanced += reflectivity * area * cavity_gain * alignment**2
 
@@ -393,13 +462,15 @@ class RCSEngine:
             for prop in settings.propellers:
                 axis = prop.axis()
                 alignment = np.clip(directions @ axis, 0.0, 1.0)
-                disk_area = np.pi * prop.radius_m**2
+                disk_area = float(np.pi * prop.radius_m**2)
                 blade_fill = min(1.0, prop.blade_count * 0.15)
-                tip_speed = 2 * np.pi * prop.radius_m * prop.rpm / 60.0
+                tip_speed = 2.0 * np.pi * prop.radius_m * prop.rpm / 60.0
                 doppler_gain = 1.0 + min(tip_speed / 200.0, 3.0) * 0.25
                 enhanced += reflectivity * disk_area * blade_fill * alignment * doppler_gain
 
         return enhanced
+
+    # --- SBR core worker ---------------------------------------------------
 
     def _trace_direction_block(
         self,
@@ -410,18 +481,20 @@ class RCSEngine:
         reflectivity: float,
         loss_per_reflection: float,
         k: float,
-        edges: tuple,
+        edges: Iterable[SharpEdge],
         centers: np.ndarray,
-        stop_cb,
+        stop_cb: Callable[[], bool],
         origin_center: np.ndarray,
         origin_distance: float,
-        ray_intersector,
+        ray_intersector: Any,
         area_faces: np.ndarray,
         face_normals: np.ndarray,
     ) -> np.ndarray:
         """Trace a batch of directions and return their linear RCS contributions."""
 
         results = np.zeros(len(directions), dtype=float)
+        edges_tuple: Tuple[SharpEdge, ...] = tuple(edges)
+
         for idx, direction in enumerate(directions):
             if stop_cb():
                 break
@@ -429,11 +502,16 @@ class RCSEngine:
             origin = origin_center - origin_distance * direction
             specular_sum = 0.0j
             basis_u, basis_v = self._orthonormal_basis(direction)
-            bundle_origins = origin + bundle_grid[:, 0:1] * basis_u + bundle_grid[:, 1:2] * basis_v
+
+            bundle_origins = (
+                origin + bundle_grid[:, 0:1] * basis_u + bundle_grid[:, 1:2] * basis_v
+            )
+
             for ray_origin in bundle_origins:
                 energy = 1.0
                 path_length = 0.0
                 ray_dir = direction
+
                 for _ in range(max_reflections):
                     try:
                         locs, _, tri_idx = ray_intersector.intersects_location(
@@ -442,22 +520,25 @@ class RCSEngine:
                             multiple_hits=False,
                         )
                     except Exception:
-                        # If the backend fails (e.g., missing optional acceleration modules),
-                        # treat this path as non-contributing instead of crashing the worker.
+                        # If the backend fails (e.g. missing acceleration modules)
+                        # treat this path as non-contributing instead of crashing.
                         break
+
                     if len(locs) == 0:
                         break
+
                     hit = locs[0]
-                    face_index = tri_idx[0]
+                    face_index = int(tri_idx[0])
                     normal = face_normals[face_index]
-                    reflect_dir = ray_dir - 2 * np.dot(ray_dir, normal) * normal
-                    reflect_dir /= np.linalg.norm(reflect_dir)
+
+                    reflect_dir = ray_dir - 2.0 * float(np.dot(ray_dir, normal)) * normal
+                    reflect_dir /= np.linalg.norm(reflect_dir) + 1e-12
 
                     path_length += float(np.linalg.norm(hit - ray_origin))
 
-                    alignment = np.dot(reflect_dir, -ray_dir)
+                    alignment = float(np.dot(reflect_dir, -ray_dir))
                     if alignment > 0.95:
-                        area_term = area_faces[face_index] * (np.dot(normal, -ray_dir)) ** 2
+                        area_term = area_faces[face_index] * (float(np.dot(normal, -ray_dir))) ** 2
                         total_path = self._path_to_receiver(path_length, hit, origin, direction)
                         phase = self._monostatic_phase(k, total_path)
                         specular_sum += energy * area_term * np.exp(1j * phase)
@@ -469,32 +550,36 @@ class RCSEngine:
                     ray_origin = hit + 1e-4 * reflect_dir
                     ray_dir = reflect_dir
 
-            k_hat = direction / (np.linalg.norm(direction) + 1e-12)
-            illum_mask = (mesh.face_normals @ -k_hat) > 0.0
-            edge_term = edge_diffraction_field(edges, k_hat, k, mesh)
-            corner_term = corner_field(
-                k_hat,
-                mesh.face_normals,
-                mesh.area_faces,
-                centers,
-                k,
-                illuminated_mask=illum_mask,
-            )
-            diffraction_power = reflectivity * np.abs(edge_term + corner_term) ** 2
+            # Diffraction contribution for this direction
+            if edges_tuple:
+                k_hat = direction / (np.linalg.norm(direction) + 1e-12)
+                illum_mask = (face_normals @ -k_hat) > 0.0
+                edge_term = edge_diffraction_field(edges_tuple, k_hat, k, mesh)
+                corner_term = corner_field(
+                    k_hat,
+                    face_normals,
+                    area_faces,
+                    centers,
+                    k,
+                    illuminated_mask=illum_mask,
+                )
+                diffraction_power = reflectivity * np.abs(edge_term + corner_term) ** 2
+            else:
+                diffraction_power = 0.0
 
-            averaged_specular = specular_sum / len(bundle_grid)
-            specular_power = np.abs(averaged_specular) ** 2
+            averaged_specular = specular_sum / max(len(bundle_grid), 1)
+            specular_power = float(np.abs(averaged_specular) ** 2)
             results[idx] = max(specular_power + diffraction_power, 1e-12)
 
         return results
 
+    # --- geometry helpers --------------------------------------------------
+
     @staticmethod
     def _orthonormal_basis(direction: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         """Return two unit vectors spanning the plane perpendicular to *direction*."""
-
         w = direction / (np.linalg.norm(direction) + 1e-12)
-        # Pick an arbitrary vector not parallel to w
-        if abs(w[2]) < 0.9:
+        if abs(float(w[2])) < 0.9:
             helper = np.array([0.0, 0.0, 1.0])
         else:
             helper = np.array([0.0, 1.0, 0.0])
@@ -507,27 +592,17 @@ class RCSEngine:
     @staticmethod
     def _compute_wavelength(freq_hz: float) -> float:
         """Return the free-space wavelength (metres) for ``freq_hz``."""
-        c = 3e8
+        c = 3.0e8
         return c / max(freq_hz, 1e-9)
 
     @staticmethod
     def _monostatic_phase(k: float, total_path_length: float) -> float:
-        """Compute the propagation phase for a given total path length.
-
-        Parameters
-        ----------
-        k:
-            Wavenumber ``2*pi/lambda``.
-        total_path_length:
-            Total travelled path length in metres (already including outbound
-            and inbound paths where appropriate).
-        """
+        """Propagation phase for a given total path length."""
         return k * total_path_length
 
     @staticmethod
     def _direction_from_angles(yaw_deg: float, elev_deg: float) -> np.ndarray:
         """Convert azimuth/elevation angles in degrees to a unit vector."""
-
         az = np.radians(yaw_deg)
         el = np.radians(elev_deg)
         return np.array(
@@ -540,33 +615,24 @@ class RCSEngine:
 
     @staticmethod
     def _path_to_receiver(
-        path_length: float, hit: np.ndarray, rx_origin: np.ndarray, rx_dir: np.ndarray
+        path_length: float,
+        hit: np.ndarray,
+        rx_origin: np.ndarray,
+        rx_dir: np.ndarray,
     ) -> float:
-        """Approximate total Tx-to-hit plus hit-to-Rx distance for phase.
-
-        The ray tracing loop accumulates ``path_length`` along the transmit
-        path. The additional leg to the receiver is approximated using the
-        straight-line distance to the receiver origin placed on the far-field
-        sphere along ``rx_dir``.
-        """
-
-        del rx_dir  # Receiver orientation is implicit in ``rx_origin``.
+        """Approximate Tx→hit plus hit→Rx path length for phase."""
+        del rx_dir  # orientation is implicit in ``rx_origin``
         return path_length + float(np.linalg.norm(hit - rx_origin))
+
+    # --- material / polarisation handling ---------------------------------
 
     @staticmethod
     def _select_reflectivity(material: Material, polarization: str) -> float:
-        """Choose an effective scalar reflectivity for the desired polarization.
-
-        Supports both dataclass ``Material`` and dict-like material containers.
-        Co-pol and cross-pol terms approximate a 2x2 scattering matrix
-        in the power domain.
-        """
+        """Choose an effective scalar reflectivity for the desired polarisation."""
 
         def _get_optional(attr: str) -> Optional[float]:
-            # Dataclass-style attribute access
             if hasattr(material, attr):
                 value = getattr(material, attr)
-            # Dict-like access if supported
             elif hasattr(material, "get"):
                 try:
                     value = material.get(attr)  # type: ignore[call-arg]
@@ -582,14 +648,10 @@ class RCSEngine:
             except (TypeError, ValueError):
                 return None
 
-        # Base reflectivity (scalar), used as ultimate fallback
         base = _get_optional("reflectivity") or 1.0
 
-        # Normalize polarization string:
-        # "H", "HH", "H/H", "H-H", etc. → "HH" style
         pol = polarization.upper().replace("-", "").replace("/", "").strip()
 
-        # --- Co-pol terms ---
         refl_hh = _get_optional("reflectivity_hh")
         refl_vv = _get_optional("reflectivity_vv")
         refl_h = _get_optional("reflectivity_h")
@@ -605,12 +667,10 @@ class RCSEngine:
         if not np.isfinite(refl_vv) or refl_vv < 0.0:
             refl_vv = base
 
-        # --- Cross-pol terms ---
         refl_hv = _get_optional("reflectivity_hv")
         refl_vh = _get_optional("reflectivity_vh")
 
         if refl_hv is None and refl_vh is None:
-            # Default: low cross-pol, e.g. about -10 dB relative to average co-pol
             cross_default = 0.1 * (refl_hh + refl_vv) * 0.5
             refl_hv = cross_default
             refl_vh = cross_default
@@ -625,19 +685,15 @@ class RCSEngine:
         if not np.isfinite(refl_vh) or refl_vh < 0.0:
             refl_vh = 0.0
 
-        # --- Map polarization to effective scalar ---
-        if pol in ("H", "HH"):
+        if pol in {"H", "HH"}:
             return max(float(refl_hh), 0.0)
-        if pol in ("V", "VV"):
+        if pol in {"V", "VV"}:
             return max(float(refl_vv), 0.0)
-        if pol in ("HV", "VH", "X", "XPOL", "CROSS"):
-            # Simple cross-pol approximation: average of HV and VH
+        if pol in {"HV", "VH", "X", "XPOL", "CROSS"}:
             return max(float(0.5 * (refl_hv + refl_vh)), 0.0)
-        if pol in ("RL", "LR", "RC", "LC", "C", "CIRC"):
-            # Circular or generic → average co-pol
+        if pol in {"RL", "LR", "RC", "LC", "C", "CIRC"}:
             return max(float(0.5 * (refl_hh + refl_vv)), 0.0)
 
-        # Fallback for anything else: treat as generic linear with averaged co-pol
         return max(float(0.5 * (refl_hh + refl_vv)), 0.0)
 
 
