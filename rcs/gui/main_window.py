@@ -333,8 +333,9 @@ class MainWindow(QtWidgets.QMainWindow):
         form.addRow("Max reflections:", self.reflections_spin)
 
         self.method_combo = QtWidgets.QComboBox()
-        self.method_combo.addItem("Ray tracing (multi-bounce)", "ray")
-        self.method_combo.addItem("Facet summation (physical optics)", "facet_po")
+        self.method_combo.addItem("Fast Approximation (facet PO)", "fast")
+        self.method_combo.addItem("Realistic LO Mode", "lo")
+        self.method_combo.addItem("Experimental SBR (ray tracing)", "sbr")
         form.addRow("RCS method:", self.method_combo)
 
         # Material selection
