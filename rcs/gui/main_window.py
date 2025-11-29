@@ -1,6 +1,7 @@
 """PyQt5 main window for the RCS calculator."""
 
 from __future__ import annotations
+from mpl_toolkits.mplot3d.axes3d import Axes3D
 
 from pathlib import Path
 from typing import List, Optional, Mapping, cast  # ← added Mapping, cast
@@ -147,15 +148,29 @@ class MainWindow(QtWidgets.QMainWindow):
         polar_layout.addWidget(self.polar_canvas)
         self.tabs.addTab(polar_tab, "2D Polar")
 
-        # 3D RCS plot
+                # 3D RCS plot
         self.rcs3d_canvas = PlotCanvas()
         rcs_tab = QtWidgets.QWidget()
         rcs_layout = QtWidgets.QVBoxLayout(rcs_tab)
         rcs_controls = QtWidgets.QHBoxLayout()
+
         self.freq_selector = QtWidgets.QComboBox()
         self.freq_selector.setEnabled(False)
         rcs_controls.addWidget(QtWidgets.QLabel("Display freq:"))
         rcs_controls.addWidget(self.freq_selector)
+
+        # NEW: 3D scale mode selector
+        self.rcs3d_scale_mode = QtWidgets.QComboBox()
+        self.rcs3d_scale_mode.addItems(
+            [
+                "dB (radius & color)",
+                "Linear (radius & color)",
+                "Linear (fixed radius, color only)",
+            ]
+        )
+        rcs_controls.addWidget(QtWidgets.QLabel("3D scale:"))
+        rcs_controls.addWidget(self.rcs3d_scale_mode)
+
         self.clip_min = QtWidgets.QDoubleSpinBox()
         self.clip_min.setRange(-100, 100)
         self.clip_min.setValue(-40)
@@ -167,9 +182,11 @@ class MainWindow(QtWidgets.QMainWindow):
         rcs_controls.addWidget(QtWidgets.QLabel("Max dB:"))
         rcs_controls.addWidget(self.clip_max)
         rcs_controls.addStretch(1)
+
         rcs_layout.addLayout(rcs_controls)
         rcs_layout.addWidget(self.rcs3d_canvas)
         self.tabs.addTab(rcs_tab, "3D RCS")
+
 
         # Heatmap tab
         self.heatmap_canvas = PlotCanvas()
@@ -406,6 +423,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.clip_min.valueChanged.connect(self._update_rcs_plot)
         self.clip_max.valueChanged.connect(self._update_rcs_plot)
         self.freq_selector.currentIndexChanged.connect(self._update_rcs_plot)
+        self.rcs3d_scale_mode.currentTextChanged.connect(self._update_rcs_plot)
         self.heat_clip_min.valueChanged.connect(self._update_heatmap_plot)
         self.heat_clip_max.valueChanged.connect(self._update_heatmap_plot)
         self.heatmap_freq_selector.currentIndexChanged.connect(self._update_heatmap_plot)
@@ -865,49 +883,119 @@ class MainWindow(QtWidgets.QMainWindow):
         self.heatmap_freq_selector.setEnabled(len(freqs) > 1)
         self.heatmap_freq_selector.setCurrentIndex(0)
         self.heatmap_freq_selector.blockSignals(False)
+    class MainWindow(QtWidgets.QMainWindow):
+        def __init__(self) -> None:
+            super().__init__()
+        ...
+    
+    # ... andere Methoden ...
+
+    def _update_heatmap_plot(self) -> None:
+        # dein Heatmap-Code
+        ...
 
     def _update_rcs_plot(self) -> None:
         if self.result is None:
             return
+
         self.rcs3d_canvas.clear()
         ax = self.rcs3d_canvas.figure.add_subplot(111, projection="3d")
+
         freq_idx = self.freq_selector.currentIndex()
         freq_idx = max(0, min(freq_idx, len(self.result.frequencies_hz) - 1))
-        rcs = self.result.rcs_dbsm[freq_idx]
-        rcs = np.clip(rcs, self.clip_min.value(), self.clip_max.value())
+
+        # RCS in dBsm für selektierte Frequenz
+        rcs_db = self.result.rcs_dbsm[freq_idx].copy()
+
+        scale_mode = self.rcs3d_scale_mode.currentText()
+
+        # dB-Clipping nur wenn dB angezeigt werden
+        if "dB" in scale_mode:
+            rcs_db = np.clip(rcs_db, self.clip_min.value(), self.clip_max.value())
+
         az_rad = np.radians(self.result.azimuth_deg)
         el_rad = np.radians(self.result.elevation_deg)
         az_grid, el_grid = np.meshgrid(az_rad, el_rad)
-        r_lin = 10 ** (rcs / 10)
-        r_norm = r_lin / (np.nanmax(r_lin) + 1e-9)
-        radius = np.cbrt(r_norm)
+
+        if scale_mode == "dB (radius & color)":
+            r_lin = 10.0 ** (rcs_db / 10.0)
+            r_lin = np.maximum(r_lin, 1e-12)
+            r_norm = r_lin / (np.nanmax(r_lin) + 1e-12)
+            radius = np.cbrt(r_norm)
+
+            face_values_for_color = rcs_db
+            color_label = "RCS (dBsm)"
+
+        elif scale_mode == "Linear (radius & color)":
+            r_lin = 10.0 ** (self.result.rcs_dbsm[freq_idx] / 10.0)
+            r_lin = np.maximum(r_lin, 1e-12)
+            r_norm = r_lin / (np.nanmax(r_lin) + 1e-12)
+            radius = np.cbrt(r_norm)
+
+            face_values_for_color = r_norm
+            color_label = "RCS (linear, normalized)"
+
+        elif scale_mode == "Linear (fixed radius, color only)":
+            r_lin = 10.0 ** (self.result.rcs_dbsm[freq_idx] / 10.0)
+            r_lin = np.maximum(r_lin, 1e-12)
+            r_norm = r_lin / (np.nanmax(r_lin) + 1e-12)
+            radius = np.ones_like(r_norm)
+
+            face_values_for_color = r_norm
+            color_label = "RCS (linear, normalized)"
+        else:
+            # Fallback: entspricht alten dB-Plot
+            rcs_db = np.clip(rcs_db, self.clip_min.value(), self.clip_max.value())
+            r_lin = 10.0 ** (rcs_db / 10.0)
+            r_lin = np.maximum(r_lin, 1e-12)
+            r_norm = r_lin / (np.nanmax(r_lin) + 1e-12)
+            radius = np.cbrt(r_norm)
+            face_values_for_color = rcs_db
+            color_label = "RCS (dBsm)"
+
         x = radius * np.cos(el_grid) * np.cos(az_grid)
         y = radius * np.cos(el_grid) * np.sin(az_grid)
         z = radius * np.sin(el_grid)
-        cmap = plt.get_cmap("viridis")
-        ax.plot_surface(  # type: ignore[attr-defined]
+
+        v_min = np.nanmin(face_values_for_color)
+        v_max = np.nanmax(face_values_for_color)
+        if v_max - v_min < 1e-12:
+            norm_vals = np.zeros_like(face_values_for_color)
+        else:
+            norm_vals = (face_values_for_color - v_min) / (v_max - v_min)
+
+        cmap = plt.cm.get_cmap("viridis")
+        facecolors = cmap(norm_vals)
+
+        ax.plot_surface(
             x,
             y,
             z,
-            facecolors=cmap(r_norm),
+            facecolors=facecolors,
             rstride=1,
             cstride=1,
+            linewidth=0.0,
+            antialiased=True,
             alpha=0.9,
         )
-        from matplotlib.cm import ScalarMappable  # local import to keep stubs happy
 
-        mappable = ScalarMappable(cmap=cmap)
-        mappable.set_array(rcs)
+        mappable = plt.cm.ScalarMappable(cmap=cmap)
+        mappable.set_array(face_values_for_color)
         self.rcs3d_canvas.figure.colorbar(
-            mappable, ax=ax, shrink=0.5, aspect=10, label="RCS (dBsm)"
+            mappable,
+            ax=ax,
+            shrink=0.5,
+            aspect=10,
+            label=color_label,
         )
+
         title = f"3D RCS at {self.result.frequencies_hz[freq_idx]/1e9:.2f} GHz"
         if self.result.radar_profile:
             title += f" – {self.result.radar_profile}"
         if self.result.target_speed_mps:
             title += f" @ {self.result.target_speed_mps:.0f} m/s"
         ax.set_title(title)
-        ax.set_box_aspect((1, 1, 1))  # type: ignore[arg-type]
+        ax.set_box_aspect((1, 1, 1))
         self.rcs3d_canvas.draw_idle()
 
     def _update_heatmap_plot(self) -> None:
