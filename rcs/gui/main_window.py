@@ -808,11 +808,52 @@ class MainWindow(QtWidgets.QMainWindow):
     def _on_simulation_failed(self, message: str) -> None:
         QtWidgets.QMessageBox.critical(self, "Simulation failed", message)
         self.status_label.setText("Failed")
+        # ------------------------------------------------------------------
+    def _precompute_plot_cache(self) -> None:
+        """Precompute grids and RCS arrays so UI plots are fast and non-blocking."""
+
+        if self.result is None:
+            self._az_grid = None
+            self._el_grid = None
+            self._az_deg_grid = None
+            self._el_deg_grid = None
+            self._rcs_lin = None
+            self._rcs_norm = None
+            self._rcs_radius = None
+            return
+
+        # Angle grids
+        az_deg = self.result.azimuth_deg
+        el_deg = self.result.elevation_deg
+
+        az_rad = np.radians(az_deg)
+        el_rad = np.radians(el_deg)
+
+        self._az_grid, self._el_grid = np.meshgrid(az_rad, el_rad)
+        self._az_deg_grid, self._el_deg_grid = np.meshgrid(az_deg, el_deg)
+
+        # RCS in linear domain (σ in m^2), shape (F, E, A)
+        rcs_db = self.result.rcs_dbsm
+        lin = 10.0 ** (rcs_db / 10.0)
+        lin = np.maximum(lin, 1e-12)
+
+        # Normalize per frequency (so 3D & heatmap haben 0–1 Skala intern)
+        max_per_freq = np.nanmax(lin, axis=(1, 2), keepdims=True)
+        max_per_freq[max_per_freq <= 0.0] = 1.0
+
+        self._rcs_lin = lin
+        self._rcs_norm = lin / max_per_freq
+        self._rcs_radius = np.cbrt(self._rcs_norm)  # compressed dynamic range for 3D
 
     def _on_simulation_finished(self, result: SimulationResult) -> None:
         self.result = result
         self.status_label.setText("Simulation complete")
         self.progress.setValue(100)
+
+        # >>> NEU: Plot-Cache vorberechnen
+        self._precompute_plot_cache()
+        # <<<
+
         self._populate_frequency_selector(result.frequencies_hz)
         self._update_polar_plot()
         self._update_rcs_plot()
@@ -897,27 +938,24 @@ class MainWindow(QtWidgets.QMainWindow):
     def _update_rcs_plot(self) -> None:
         if self.result is None:
             return
+        if self._rcs_radius is None or self._az_grid is None or self._el_grid is None:
+            return
 
         self.rcs3d_canvas.clear()
         ax = self.rcs3d_canvas.figure.add_subplot(111, projection="3d")
 
         freq_idx = self.freq_selector.currentIndex()
-        freq_idx = max(0, min(freq_idx, len(self.result.frequencies_hz) - 1))
+        freq_idx = max(0, min(freq_idx, self._rcs_radius.shape[0] - 1))
 
-        # RCS in dBsm für selektierte Frequenz
-        rcs_db = self.result.rcs_dbsm[freq_idx].copy()
+        # Full dB array for selected frequency (unclipped)
+        rcs_db_full = self.result.rcs_dbsm[freq_idx]
 
         scale_mode = self.rcs3d_scale_mode.currentText()
 
-        # dB-Clipping nur wenn dB angezeigt werden
-        if "dB" in scale_mode:
-            rcs_db = np.clip(rcs_db, self.clip_min.value(), self.clip_max.value())
-
-        az_rad = np.radians(self.result.azimuth_deg)
-        el_rad = np.radians(self.result.elevation_deg)
-        az_grid, el_grid = np.meshgrid(az_rad, el_rad)
-
+        # --- Choose radius / color mapping depending on mode ---
         if scale_mode == "dB (radius & color)":
+            # dB clipping
+            rcs_db = np.clip(rcs_db_full, self.clip_min.value(), self.clip_max.value())
             r_lin = 10.0 ** (rcs_db / 10.0)
             r_lin = np.maximum(r_lin, 1e-12)
             r_norm = r_lin / (np.nanmax(r_lin) + 1e-12)
@@ -927,36 +965,38 @@ class MainWindow(QtWidgets.QMainWindow):
             color_label = "RCS (dBsm)"
 
         elif scale_mode == "Linear (radius & color)":
-            r_lin = 10.0 ** (self.result.rcs_dbsm[freq_idx] / 10.0)
-            r_lin = np.maximum(r_lin, 1e-12)
-            r_norm = r_lin / (np.nanmax(r_lin) + 1e-12)
-            radius = np.cbrt(r_norm)
+            # Komplett linear, direkt aus Cache
+            r_norm = self._rcs_norm[freq_idx]
+            radius = self._rcs_radius[freq_idx]
 
             face_values_for_color = r_norm
             color_label = "RCS (linear, normalized)"
 
         elif scale_mode == "Linear (fixed radius, color only)":
-            r_lin = 10.0 ** (self.result.rcs_dbsm[freq_idx] / 10.0)
-            r_lin = np.maximum(r_lin, 1e-12)
-            r_norm = r_lin / (np.nanmax(r_lin) + 1e-12)
+            # Einheitssphäre, Farbe = linear norm
+            r_norm = self._rcs_norm[freq_idx]
             radius = np.ones_like(r_norm)
 
             face_values_for_color = r_norm
             color_label = "RCS (linear, normalized)"
+
         else:
-            # Fallback: entspricht alten dB-Plot
-            rcs_db = np.clip(rcs_db, self.clip_min.value(), self.clip_max.value())
+            # Fallback: wie früher – dB basierter Radius, dB Farben
+            rcs_db = np.clip(rcs_db_full, self.clip_min.value(), self.clip_max.value())
             r_lin = 10.0 ** (rcs_db / 10.0)
             r_lin = np.maximum(r_lin, 1e-12)
             r_norm = r_lin / (np.nanmax(r_lin) + 1e-12)
             radius = np.cbrt(r_norm)
+
             face_values_for_color = rcs_db
             color_label = "RCS (dBsm)"
 
-        x = radius * np.cos(el_grid) * np.cos(az_grid)
-        y = radius * np.cos(el_grid) * np.sin(az_grid)
-        z = radius * np.sin(el_grid)
+        # Cartesian coordinates from spherical angles + radius field
+        x = radius * np.cos(self._el_grid) * np.cos(self._az_grid)
+        y = radius * np.cos(self._el_grid) * np.sin(self._az_grid)
+        z = radius * np.sin(self._el_grid)
 
+        # Normalize colors 0–1 for colormap
         v_min = np.nanmin(face_values_for_color)
         v_max = np.nanmax(face_values_for_color)
         if v_max - v_min < 1e-12:
@@ -998,27 +1038,41 @@ class MainWindow(QtWidgets.QMainWindow):
         ax.set_box_aspect((1, 1, 1))
         self.rcs3d_canvas.draw_idle()
 
+
     def _update_heatmap_plot(self) -> None:
         if self.result is None:
             return
+        if self._az_deg_grid is None or self._el_deg_grid is None:
+            return
+
         self.heatmap_canvas.clear()
         ax = self.heatmap_canvas.figure.add_subplot(111)
+
         freq_idx = self.heatmap_freq_selector.currentIndex()
-        freq_idx = max(0, min(freq_idx, len(self.result.frequencies_hz) - 1))
-        rcs = self.result.rcs_dbsm[freq_idx]
-        rcs = np.clip(rcs, self.heat_clip_min.value(), self.heat_clip_max.value())
-        az = self.result.azimuth_deg
-        el = self.result.elevation_deg
-        az_grid, el_grid = np.meshgrid(az, el)
-        pcm = ax.pcolormesh(az_grid, el_grid, rcs, shading="auto", cmap="inferno")
+        freq_idx = max(0, min(freq_idx, self.result.frequencies_hz.shape[0] - 1))
+
+        rcs_db = self.result.rcs_dbsm[freq_idx].copy()
+        rcs_db = np.clip(rcs_db, self.heat_clip_min.value(), self.heat_clip_max.value())
+
+        pcm = ax.pcolormesh(
+            self._az_deg_grid,
+            self._el_deg_grid,
+            rcs_db,
+            shading="auto",
+            cmap="inferno",
+        )
         self.heatmap_canvas.figure.colorbar(pcm, ax=ax, label="RCS (dBsm)")
+
         ax.set_xlabel("Azimuth (deg)")
         ax.set_ylabel("Elevation (deg)")
+
         title = f"RCS heatmap at {self.result.frequencies_hz[freq_idx]/1e9:.2f} GHz"
         if self.result.radar_profile:
             title += f" – {self.result.radar_profile}"
         ax.set_title(title)
+
         self.heatmap_canvas.draw_idle()
+
 
     # ------------------------------------------------------------------
     def _refresh_templates(self) -> None:
