@@ -90,8 +90,18 @@ class PlotCanvas(FigureCanvasQTAgg):
 
 
 class MainWindow(QtWidgets.QMainWindow):
-    def __init__(self) -> None:
+    def __init__(self):
         super().__init__()
+
+        # cache attributes here
+        self._az_grid = None
+        self._el_grid = None
+        self._az_deg_grid = None
+        self._el_deg_grid = None
+
+        self._rcs_lin = None
+        self._rcs_norm = None
+        self._rcs_radius = None
         self.setWindowTitle("Radar RCS Studio")
         self.resize(1200, 800)
 
