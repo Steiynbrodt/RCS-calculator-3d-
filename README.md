@@ -181,7 +181,7 @@ Zum Teilen einfach die JSON-Dateien uploaden.
 
 🧠 Genauigkeit & Physikmodell
 
-⚠️ Das ist keine militärische Software.
+⚠️ Das ist noch keine militärische Software.
 Aber du bekommst ein technisch sinnvolles RCS-Verhalten basierend auf:
 
 Physical Optics (PO)
@@ -206,7 +206,7 @@ Hobby-Radar / Signalverarbeitung
 
 NCTR Methoden (template matching)
 
-Nicht geeignet für:
+noch Nicht geeignet für:
 
 Klassifizierte Stealth-Analysen
 
