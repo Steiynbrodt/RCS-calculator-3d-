@@ -181,7 +181,7 @@ Zum Teilen einfach die JSON-Dateien uploaden.
 
 🧠 Genauigkeit & Physikmodell
 
-⚠️ Das ist noch keine militärische Software.
+⚠️ Das ist NOCH keine militärische Software.
 Aber du bekommst ein technisch sinnvolles RCS-Verhalten basierend auf:
 
 Physical Optics (PO)
@@ -241,4 +241,5 @@ multipath ground modeling
 clutter & noise simulation
 
 doppler-spectrum generator / waterfall
+evtl multiprocessing  bevor gpu da ich keine nvidia geräte habe die dies vereinfachen
 
